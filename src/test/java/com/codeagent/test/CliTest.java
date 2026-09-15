@@ -46,12 +46,22 @@ public class CliTest {
             fails += check("offline turn echoes user input", turn != null && turn.contains("you said: hello"));
 
             String sess = cli.handle("/session");
-            fails += check("turn persisted user+assistant (events=2)", sess.contains("events=2"));
+            fails += check("first turn persists system+user+assistant (events=3)", sess.contains("events=3"));
+
+            // /status 暴露安全与追踪状态
+            String st2 = cli.handle("/status");
+            fails += check("/status shows injection guard enabled", st2.contains("injection-guard=on"));
+            fails += check("/status shows trace events", st2.contains("trace:") && st2.contains("events"));
+
+            // /trace：审计追踪已记录本回合
+            String tr = cli.handle("/trace");
+            fails += check("/trace reports file and 1 event",
+                    tr != null && tr.startsWith("trace:") && tr.contains("events=1"));
 
             // /compact：给出压缩前后规模（不改动 append-only 日志）
             String cp = cli.handle("/compact");
-            fails += check("/compact reports before -> after", cp != null && cp.startsWith("compacted 2 -> "));
-            fails += check("log untouched by /compact", cli.handle("/session").contains("events=2"));
+            fails += check("/compact reports before -> after", cp != null && cp.startsWith("compacted 3 -> "));
+            fails += check("log untouched by /compact", cli.handle("/session").contains("events=3"));
 
             // /approve：记录审批
             String ap = cli.handle("/approve edit_file a.txt");

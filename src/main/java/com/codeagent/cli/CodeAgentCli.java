@@ -3,8 +3,11 @@ package com.codeagent.cli;
 import com.codeagent.context.ContextBudget;
 import com.codeagent.context.DefaultContextGovernance;
 import com.codeagent.context.MicroCompact;
+import com.codeagent.context.ToolResultStorage;
 import com.codeagent.core.*;
+import com.codeagent.observability.TraceRecorder;
 import com.codeagent.permission.DefaultPermissionManager;
+import com.codeagent.permission.InjectionGuard;
 import com.codeagent.session.Session;
 import com.codeagent.tools.*;
 
@@ -28,6 +31,8 @@ public class CodeAgentCli {
     private final Session session;
     private final AgentLoop loop;
     private final DefaultContextGovernance gov;
+    private final TraceRecorder trace;
+    private final InjectionGuard guard;
 
     public CodeAgentCli(AgentConfig cfg) {
         this.cfg = cfg;
@@ -43,7 +48,10 @@ public class CodeAgentCli {
         registry.register(new RunCommandTool(workspace));
 
         this.perms = new DefaultPermissionManager(ws, ws.resolve(".codeagent/permissions.json"));
+        this.perms.acceptEdits = cfg.acceptEdits;
         this.session = Session.open(ws.resolve(".codeagent/sessions"), "default");
+        this.trace = new TraceRecorder(ws.resolve(".codeagent/traces/trace.jsonl"));
+        this.guard = new InjectionGuard(false);
 
         ContextBudget budget = new ContextBudget();
         budget.limit = 128_000;
@@ -57,6 +65,9 @@ public class CodeAgentCli {
         this.loop.maxSteps = cfg.maxSteps;
         this.loop.permissionManager = perms;
         this.loop.context = gov;
+        this.loop.injectionGuard = guard;
+        this.loop.storage = new ToolResultStorage(ws.resolve(".codeagent/offscreen"));
+        this.loop.largeResultBytes = cfg.largeResultKb * 1024;
         this.loop.model.chatModel = buildModel();
     }
 
@@ -80,6 +91,12 @@ public class CodeAgentCli {
         if (s.startsWith("/")) return command(s);
 
         List<Message> messages = new ArrayList<>(session.messages());
+        // 首个回合注入 system prompt 并落盘，保证 replay 出来的就是模型当初真正看到的上下文
+        if (messages.isEmpty()) {
+            Message sys = Message.system(SystemPrompt.defaultPrompt(cfg.workspace));
+            session.append(sys);
+            messages.add(sys);
+        }
         int persisted = messages.size(); // 已在日志中的条数，之后的新消息才需要 append
         messages.add(Message.user(s));
 
@@ -88,6 +105,7 @@ public class CodeAgentCli {
             res = loop.runTurn(messages, registry);
         } catch (Exception e) {
             // 模型/网络故障不应终结 REPL：单回合失败要可恢复
+            trace.turn("ERROR", 0, 0, 0, e.getMessage());
             return "error: " + e.getMessage();
         }
         gov.observe(loop.model.lastUsage); // 用 provider usage 更新预算
@@ -96,6 +114,10 @@ public class CodeAgentCli {
 
         String content = lastAssistantText(res.messages);
         String body = content == null ? "" : content;
+        // 审计：记录状态/步数/token 用量（成本归因与排障的事实来源）
+        trace.turn(res.status.name(), res.steps,
+                gov.budget().promptTokens, gov.budget().completionTokens, body);
+
         if (res.status != AgentLoop.TurnStatus.FINAL) {
             return "[" + res.status.name() + "] " + body;
         }
@@ -113,6 +135,7 @@ public class CodeAgentCli {
                         "/compact              preview auto-compaction (does not mutate the append-only log)",
                         "/approve <tool> <path> approve a write target (persisted)",
                         "/session              current session info",
+                        "/trace                audit trace file and event count",
                         "/exit | /quit         leave");
             case "/tools": {
                 StringBuilder sb = new StringBuilder();
@@ -131,7 +154,9 @@ public class CodeAgentCli {
                                 + " prompt=" + b.promptTokens + " completion=" + b.completionTokens
                                 + " limit=" + b.limit,
                         "tools:      " + registry.specs().size(),
-                        "max steps:  " + cfg.maxSteps);
+                        "max steps:  " + cfg.maxSteps,
+                        "trace:      " + trace.size() + " events",
+                        "security:   injection-guard=on accept-edits=" + perms.acceptEdits);
             }
             case "/compact": {
                 List<Message> msgs = session.messages();
@@ -144,6 +169,8 @@ public class CodeAgentCli {
                 perms.approve(parts[1], parts[2]);
                 return "approved: " + parts[1] + " " + parts[2];
             }
+            case "/trace":
+                return "trace: " + trace.file() + " events=" + trace.size();
             case "/session":
                 return "session: " + session.name() + " file=" + session.file()
                         + " events=" + session.size();

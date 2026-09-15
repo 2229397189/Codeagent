@@ -1,6 +1,8 @@
 package com.codeagent.core;
 
 import com.codeagent.context.ContextGovernance;
+import com.codeagent.context.ToolResultStorage;
+import com.codeagent.permission.InjectionGuard;
 import com.codeagent.permission.PermissionManager;
 import com.codeagent.tools.ToolRegistry;
 
@@ -22,6 +24,8 @@ public class AgentLoop {
     public static class AgentTurnResult {
         public TurnStatus status;
         public List<Message> messages;
+        /** 本回合实际执行的步数（用于审计与成本归因） */
+        public int steps;
 
         public AgentTurnResult(TurnStatus s, List<Message> m) {
             this.status = s;
@@ -34,8 +38,16 @@ public class AgentLoop {
     public ContextGovernance context; // M3 注入
     public int maxSteps = 25;
 
+    /** 可选：注入防护，对进入上下文的工具输出做净化 */
+    public InjectionGuard injectionGuard;
+    /** 可选：大结果离屏存储，配合 largeResultBytes 使用 */
+    public ToolResultStorage storage;
+    /** 工具结果超过该字节数则离屏（0 = 关闭） */
+    public int largeResultBytes = 0;
+
     public AgentTurnResult runTurn(List<Message> messages, ToolRegistry tools) {
-        for (int step = 0; step < maxSteps; step++) {
+        int step = 0;
+        for (step = 0; step < maxSteps; step++) {
             List<Message> modelMessages = (context != null) ? context.apply(messages) : messages;
             ChatResponse resp = model.chat(modelMessages, tools.specs());
 
@@ -44,16 +56,28 @@ public class AgentLoop {
             messages.add(assistant);
 
             if (!resp.hasToolCalls()) {
-                return new AgentTurnResult(TurnStatus.FINAL, messages);
+                return result(TurnStatus.FINAL, messages, step + 1);
             }
             for (ToolCall call : resp.toolCalls) {
                 ToolResult r = tools.execute(call, permissionManager);
-                messages.add(Message.tool(call.id, call.name, r.output));
-                if (r.fatal) return new AgentTurnResult(TurnStatus.FAILED, messages);
-                if (r.awaitUser) return new AgentTurnResult(TurnStatus.AWAITING_USER, messages);
-                if (r.stop) return new AgentTurnResult(TurnStatus.CONTROLLED_STOP, messages);
+                // 进入上下文前：先做注入净化，再按阈值离屏（顺序不能反，否则大结果的警示语会丢失）
+                String out = r.output == null ? "" : r.output;
+                if (injectionGuard != null) out = injectionGuard.sanitize(out);
+                if (storage != null && largeResultBytes > 0 && out.length() > largeResultBytes) {
+                    out = storage.store(out);
+                }
+                messages.add(Message.tool(call.id, call.name, out));
+                if (r.fatal) return result(TurnStatus.FAILED, messages, step + 1);
+                if (r.awaitUser) return result(TurnStatus.AWAITING_USER, messages, step + 1);
+                if (r.stop) return result(TurnStatus.CONTROLLED_STOP, messages, step + 1);
             }
         }
-        return new AgentTurnResult(TurnStatus.MAX_STEPS, messages);
+        return result(TurnStatus.MAX_STEPS, messages, maxSteps);
+    }
+
+    private static AgentTurnResult result(TurnStatus s, List<Message> m, int steps) {
+        AgentTurnResult r = new AgentTurnResult(s, m);
+        r.steps = steps;
+        return r;
     }
 }

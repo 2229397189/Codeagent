@@ -29,6 +29,9 @@ public class DefaultPermissionManager implements PermissionManager {
     private final Path approvalFile; // 可为 null（仅内存，不持久化）
     private final Set<String> approvals = new LinkedHashSet<>();
 
+    /** 显式开启后跳过写前审批（对应 --accept-edits）；默认 false，改文件必须审批 */
+    public boolean acceptEdits = false;
+
     private static final Set<String> PATH_TOOLS = Set.of("read_file", "list_files", "edit_file", "patch");
     private static final Set<String> WRITE_TOOLS = Set.of("edit_file", "patch");
 
@@ -125,6 +128,7 @@ public class DefaultPermissionManager implements PermissionManager {
                 return Decision.DENY; // 逃逸工作区
             }
             if (WRITE_TOOLS.contains(call.name)) {
+                if (acceptEdits) return Decision.ALLOW; // --accept-edits：跳过逐次审批
                 return approvals.contains(approvalKey(call)) ? Decision.ALLOW : Decision.ASK;
             }
             return Decision.ALLOW; // 只读路径工具

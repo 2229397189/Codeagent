@@ -13,6 +13,7 @@ public class AllTests {
         failed += PermissionTest.run();
         failed += SessionTest.run();
         failed += CliTest.run();
+        failed += HardeningTest.run();
 
         if (failed == 0) {
             System.out.println("ALL TESTS PASSED");
