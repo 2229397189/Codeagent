@@ -24,4 +24,13 @@ public class ToolCall {
         Object v = arguments.get(key);
         return v == null ? null : String.valueOf(v);
     }
+
+    /** 序列化为会话日志（JSONL）中的紧凑 JSON 对象 */
+    public String toJson() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", id == null ? "" : id);
+        m.put("name", name == null ? "" : name);
+        m.put("arguments", arguments);
+        return Json.write(m);
+    }
 }

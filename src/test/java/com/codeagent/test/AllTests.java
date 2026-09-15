@@ -11,6 +11,7 @@ public class AllTests {
         failed += ToolsTest.run();
         failed += ContextTest.run();
         failed += PermissionTest.run();
+        failed += SessionTest.run();
         // 后续模块测试在此累加：failed += XxxTest.run();
 
         if (failed == 0) {

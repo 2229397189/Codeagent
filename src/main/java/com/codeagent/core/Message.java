@@ -2,6 +2,7 @@ package com.codeagent.core;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话消息。对齐 OpenAI chat 消息结构，但用强类型承载工具调用。
@@ -37,5 +38,28 @@ public class Message {
         m.toolCallId = callId;
         m.name = toolName;
         return m;
+    }
+
+    /** 从会话日志（JSONL）的一行重建消息，用于 resume */
+    @SuppressWarnings("unchecked")
+    public static Message fromJsonLine(String line) {
+        Object o = Json.parse(line);
+        Map<String, Object> m = (Map<String, Object>) o;
+        Role r = Role.valueOf(String.valueOf(m.get("role")));
+        Object c = m.get("content");
+        Message msg = new Message(r, c == null ? null : String.valueOf(c));
+        if (m.get("tool_call_id") != null) msg.toolCallId = String.valueOf(m.get("tool_call_id"));
+        if (m.get("name") != null) msg.name = String.valueOf(m.get("name"));
+        if (m.get("tool_calls") instanceof List) {
+            for (Object t : (List<Object>) m.get("tool_calls")) {
+                Map<String, Object> tm = (Map<String, Object>) t;
+                ToolCall tc = new ToolCall();
+                tc.id = tm.get("id") == null ? null : String.valueOf(tm.get("id"));
+                tc.name = tm.get("name") == null ? null : String.valueOf(tm.get("name"));
+                if (tm.get("arguments") instanceof Map) tc.arguments = (Map<String, Object>) tm.get("arguments");
+                msg.toolCalls.add(tc);
+            }
+        }
+        return msg;
     }
 }
