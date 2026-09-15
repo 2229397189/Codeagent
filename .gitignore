@@ -1,0 +1,15 @@
+# build output
+out/
+*.class
+
+# runtime data (sessions / off-screen results / permission rules)
+.codeagent/
+
+# local secrets / config (never commit)
+codeagent.properties
+.env
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
