@@ -39,6 +39,8 @@ bash build.sh
 
 测试原则：**不只看是否报错，必须断言返回值是预期的正确值**（读文件返回精确字节、grep 返回正确行号、越权路径被拒、预算到 90% 触发压缩、会话恢复还原精确消息等）。
 
+当前 **80 项断言全部通过，0 失败**（`AllTests` 累加 6 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI）。
+
 ## 运行
 
 ```bash
@@ -50,9 +52,22 @@ java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.6 --base-url https://o
 java -cp out com.codeagent.cli.CodeAgentCli --mock
 ```
 
-## 简历 bullet（待 MVP 完成逐条对代码后填）
+### REPL 命令
 
-见 `docs/RESUME.md`（M7 产出）。
+| 命令 | 作用 |
+|------|------|
+| `/tools` | 列出已注册工具及其描述 |
+| `/status` | 模型 / 工作区 / 会话事件数 / 上下文水位与相位 / 工具数 |
+| `/compact` | 预览 auto-compaction 效果（**不改动** append-only 日志） |
+| `/approve <tool> <path>` | 审批某个写目标，并持久化到 `.codeagent/permissions.json` |
+| `/session` | 当前会话文件与事件数 |
+| `/help` `/exit` | 帮助 / 退出 |
+
+> 工程细节：单回合的模型/网络异常会被隔离，返回 `error: ...` 后 REPL 继续可用（见 `CliTest`）。
+
+## 简历与面试
+
+见 `docs/RESUME.md`：每条 bullet 都对到具体代码文件，并**明确列出本项目没做的部分**（RAG / 多 Agent / 评估平台 / Prompt Injection 清洗等），防止面试过度宣称。
 
 ## 调研来源（设计思想借鉴，非代码复制）
 

@@ -1,0 +1,80 @@
+# CodeAgent · 简历映射与面试问答（诚实版）
+
+> 使用原则：**每条 bullet 都能指到具体文件**。面试被追问时，能说出"在哪个类、为什么这么写、边界在哪"。
+> 红线：本项目是**参考开源设计思想、用 Java 从零实现**，绝不说"复刻/实现了 XX 全部能力"。下面「明确没做」一节，是防止过度宣称的自查清单。
+
+---
+
+## 一、项目一句话
+
+用 **Java 17 零第三方依赖**从零实现一个终端编码 Agent（Codex-like），包含主循环、统一工具协议、四层上下文治理、权限沙箱、会话事件溯源五大模块；自带零依赖测试入口，**80 项断言全部断言"返回值是预期正确值"**。
+
+---
+
+## 二、简历 bullet（可直接用，每条都能对代码）
+
+1. **从零实现终端编码 Agent（Java 17，零第三方依赖）**：自研最小 JSON 解析器、unified diff 算法与测试运行器，仅用 JDK `java.net.http` 调用 LLM，保证任意环境 `javac` 即可编译运行。
+   → `core/Json.java`、`tools/DiffUtil.java`、`test/AllTests.java`、`core/OpenAiCompatibleChatModel.java`
+
+2. **设计 model→tool→model 主循环**，用**显式终止状态枚举**（`FINAL / FAILED / AWAITING_USER / CONTROLLED_STOP / MAX_STEPS`）替代"靠模型自然语言判断结束"，并以步数上限兜底防工具死循环。
+   → `core/AgentLoop.java`（`TurnStatus`、`runTurn`）
+
+3. **实现四层上下文治理**：以 **provider 返回的 usage 为事实来源**记账（70% warn / 90% auto / 100% hard 三档水位），每轮 micro-compact 确定性裁剪历史工具结果（保留 `read_file` 等参考材料），达 auto 水位触发 auto-compact 压缩为摘要并保留最近用户意图，超大结果离屏落盘、上下文仅留路径+预览。
+   → `context/ContextBudget.java`、`MicroCompact.java`、`AutoCompact.java`、`ToolResultStorage.java`、`DefaultContextGovernance.java`
+
+4. **定义统一工具协议**（`Tool / ToolRegistry / ToolSpec / ToolResult`），落地 6 个工具（read/grep/list/edit/patch/run_command）；工具结果用 `isError / awaitUser / stop / fatal` 标志驱动主循环分支，而非靠解析自然语言。
+   → `tools/Tool.java`、`ToolRegistry.java`、`ToolResult.java`、`ReadFileTool.java` 等
+
+5. **实现权限边界三态决策**（`ALLOW / DENY / ASK`）：路径沙箱拒绝逃逸工作区、危险命令分类拦截（`rm -rf` / `git reset --hard` / `sudo` / fork bomb 等）、写操作 review-before-write 且审批持久化；权限决策作为 `ToolRegistry` 的**强制门**，未审批的写直接被拦截。
+   → `permission/DefaultPermissionManager.java`、`tools/ToolRegistry.java`
+
+6. **会话事件溯源**：JSONL append-only 日志，支持 resume 重放完整上下文、rename 搬迁、fork 分支隔离（父子此后互不干扰）。
+   → `session/SessionStore.java`、`session/Session.java`
+
+7. **工程质量**：零依赖测试入口覆盖全部模块，测试原则是**断言返回正确值而非仅不报错**（读文件断言精确字节、grep 断言正确行号、预算断言在 90% 触发压缩、会话断言恢复出精确消息）；CLI 单回合错误隔离，模型/网络故障不终结 REPL。
+   → `test/*`（`AgentLoopTest` / `ToolsTest` / `ContextTest` / `PermissionTest` / `SessionTest` / `CliTest`）、`cli/CodeAgentCli.java`
+
+---
+
+## 三、面试高频追问（牛客 Agent 岗）与回答要点
+
+| 追问 | 回答要点 |
+|------|---------|
+| 为什么用 provider 的 usage 记账，而不是自己数 token？ | 自己数会和 BPE/真实计费口径不一致，且与 provider 实际窗口不符；用 provider 返回值最准。压缩后旧 usage 会失效，所以 `Usage` 里有 `stale` 标记。 |
+| micro-compact 为什么保留 `read_file` 的结果？ | 参考材料删了要重读（再花一轮 token 和延迟），不如留着；被裁剪的是"用过即弃"的 grep/list 结果。裁剪是**确定性**的（可回归测试），不依赖模型。 |
+| 权限为什么是三态（ALLOW/DENY/ASK）而不是布尔？ | 布尔无法表达"需要人来拍板"。写操作默认 ASK，审批后落盘持久化；DENY 用于明确危险（逃逸/危险命令），不给人误点的机会。 |
+| 会话为什么用 append-only 事件溯源？ | 崩溃后可 replay 精确恢复；fork 就是复制日志，天然隔离；审计友好。代价是文件会增长，靠 compact 治理。 |
+| maxSteps 兜底会不会截断正常任务？ | 会，这是**有意的降级**：宁可返回 `MAX_STEPS` 让上层/人接手，也不让 Agent 无限烧 token。 |
+| 工具结果为什么要离屏？ | "系统能访问完整数据"≠"要把完整数据塞进 prompt"。完整内容落盘，上下文只放路径+预览，需要时再取。 |
+
+---
+
+## 四、明确没做（面试别吹，避免过度宣称）
+
+- ❌ **没有 RAG / 向量检索**：代码检索目前是 grep 正则，没有 embedding、没有向量库。
+- ❌ **没有多 Agent / 规划模式**：主循环是朴素 ReAct 式（model→tool→model），没有 Plan-and-Execute、没有子 Agent 编排。
+- ❌ **没有评估平台与线上可观测**：没有 langfuse 之类的 tracing/eval，只有本地 `/status` 观测与单元测试。
+- ❌ **没有 Redis/MySQL**：会话与审批都是本地文件（`codeagent.properties` / `.codeagent/`）。
+- ❌ **没有自动评测集**：现有是确定性单元测试，不是"30 条任务集跑成功率"的离线评测。
+- ⚠️ **review-before-write 的当前形态**：是"**未审批则拦截、审批后落盘并返回 unified diff**"，**尚未**做到"先把 diff 展示给人看、人再决定批准"的完整交互（那需要工具的 dry-run 预览能力）。面试时照实讲，并说明这是下一步。
+- ⚠️ **Prompt Injection 防护不完整**：目前只做了**路径沙箱与命令边界**（能力侧边界），**没有**对工具返回的外部内容做注入检测/清洗。
+
+---
+
+## 五、可量化的_project facts（面试随口能报）
+
+- 语言/依赖：Java 17，**0 个第三方依赖**
+- 模块数：5（core / tools / context / permission / session）+ CLI
+- 工具数：6
+- 测试断言数：**80 项，全绿**
+- 上下文水位：70% warn / 90% auto / 100% hard（对齐 Codex）
+- 大结果离屏：预览 200 字符 + 完整落盘路径
+
+---
+
+## 六、推荐的下一步（按面试收益排序）
+
+1. **diff 预览 + 审批**：给 edit/patch 加 dry-run，真正做到"先看 diff 再批准"。
+2. **离线评测集**：30 条任务跑成功率/工具准确率/格式通过率，这就是简历上"评估与可观测"的实锤。
+3. **tracing**：把每回合的 prompt/工具调用/usage 落成 JSONL，配一个本地 `/trace` 命令。
+4. 再往后才是 RAG、多 Agent、Plan-and-Execute。
