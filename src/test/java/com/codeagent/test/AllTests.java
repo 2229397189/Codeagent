@@ -8,6 +8,7 @@ public class AllTests {
     public static void main(String[] args) {
         int failed = 0;
         failed += AgentLoopTest.run();
+        failed += ToolsTest.run();
         // 后续模块测试在此累加：failed += XxxTest.run();
 
         if (failed == 0) {
