@@ -123,6 +123,37 @@ public class ContextTest {
                             && "latest task B".equals(out.get(1).content));
         }
 
+        // ---- DefaultContextGovernance：管道编排（micro 每轮 / auto 达水位才触发）----
+        {
+            ContextBudget b = new ContextBudget();
+            b.limit = 1000; b.warnPct = 70; b.autoPct = 90;
+            DefaultContextGovernance g = new DefaultContextGovernance(b,
+                    new MicroCompact(1, Set.of("read_file")),
+                    DefaultContextGovernance.extractiveSummarizer());
+
+            List<Message> msgs = new ArrayList<>();
+            msgs.add(Message.user("u0"));
+            msgs.add(Message.tool("t1", "grep", "g1"));
+            msgs.add(Message.tool("t2", "read_file", "r2"));
+            msgs.add(Message.user("u3"));
+            msgs.add(Message.assistant("a4"));
+
+            // OK 水位：只做 micro（早期 grep 结果被裁剪，read_file 保留）
+            b.observe(new Usage(100, 0)); // 10% -> OK
+            List<Message> out = g.apply(msgs);
+            fails += check("governance OK applies micro-compact only",
+                    "[used tool grep]".equals(out.get(1).content) && "r2".equals(out.get(2).content));
+
+            // AUTO 水位：触发 auto-compact（压缩为摘要 + 最近用户意图）
+            b.observe(new Usage(950, 0)); // 95% -> AUTO
+            List<Message> out2 = g.apply(msgs);
+            fails += check("governance AUTO triggers auto-compact",
+                    out2.get(0).content.startsWith("[summary]"));
+            fails += check("governance AUTO keeps latest user intent",
+                    out2.size() == 2 && out2.get(1).role == Message.Role.user
+                            && "u3".equals(out2.get(1).content));
+        }
+
         return fails;
     }
 

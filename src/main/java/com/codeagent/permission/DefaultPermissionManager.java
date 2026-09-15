@@ -92,15 +92,19 @@ public class DefaultPermissionManager implements PermissionManager {
         return false;
     }
 
-    private String approvalKey(ToolCall call) {
-        String p = call.argStr("path");
+    /** 审批键 = 工具名 + 解析后的绝对路径（同工具同目标只审一次） */
+    private String keyFor(String toolName, String path) {
         String resolved;
         try {
-            resolved = ToolSupport.resolve(workspace.toString(), p == null ? "" : p).toString();
+            resolved = ToolSupport.resolve(workspace.toString(), path == null ? "" : path).toString();
         } catch (IllegalArgumentException e) {
-            resolved = (p == null ? "" : p);
+            resolved = (path == null ? "" : path);
         }
-        return call.name + ":" + resolved;
+        return toolName + ":" + resolved;
+    }
+
+    private String approvalKey(ToolCall call) {
+        return keyFor(call.name, call.argStr("path"));
     }
 
     @Override
@@ -136,8 +140,9 @@ public class DefaultPermissionManager implements PermissionManager {
         persist();
     }
 
-    public void approve(String key) {
-        approvals.add(key);
+    /** 按工具名 + 目标路径审批（供 CLI /approve 使用），并持久化 */
+    public void approve(String toolName, String path) {
+        approvals.add(keyFor(toolName, path));
         persist();
     }
 

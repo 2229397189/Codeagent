@@ -12,7 +12,7 @@ public class AllTests {
         failed += ContextTest.run();
         failed += PermissionTest.run();
         failed += SessionTest.run();
-        // 后续模块测试在此累加：failed += XxxTest.run();
+        failed += CliTest.run();
 
         if (failed == 0) {
             System.out.println("ALL TESTS PASSED");
