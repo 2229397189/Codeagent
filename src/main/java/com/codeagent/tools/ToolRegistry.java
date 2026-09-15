@@ -38,6 +38,14 @@ public class ToolRegistry {
     public ToolResult execute(ToolCall call, PermissionManager perms) {
         Tool t = tools.get(call.name);
         if (t == null) return ToolResult.error("unknown tool: " + call.name);
+        // 权限门：DENY 直接拦截；ASK 需要审批（未审批前不允许落盘）
+        PermissionManager.Decision d = perms.decide(call);
+        if (d == PermissionManager.Decision.DENY) {
+            return ToolResult.error("permission denied: " + call.name);
+        }
+        if (d == PermissionManager.Decision.ASK) {
+            return ToolResult.error("approval required: " + call.name + " (approve first)");
+        }
         return t.execute(call, perms);
     }
 }

@@ -10,6 +10,7 @@ public class AllTests {
         failed += AgentLoopTest.run();
         failed += ToolsTest.run();
         failed += ContextTest.run();
+        failed += PermissionTest.run();
         // 后续模块测试在此累加：failed += XxxTest.run();
 
         if (failed == 0) {
