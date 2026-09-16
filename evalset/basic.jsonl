@@ -1,0 +1,4 @@
+{"id":"t1","prompt":"用 run_command 执行 echo hello 并说明结果","expectTool":"run_command"}
+{"id":"t2","prompt":"用一句话解释 Java 的垃圾回收（GC）","expectContains":"GC"}
+{"id":"t3","prompt":"用 edit_file 把工作区里的 notes.txt 内容改成 DONE","expectTool":"edit_file"}
+{"id":"t4","prompt":"用 list_files 列出当前工作区","expectTool":"list_files"}

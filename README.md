@@ -27,6 +27,7 @@ src/main/java/com/codeagent/
 ├── permission/ 权限 PermissionManager · 沙箱 · 危险命令拦截 · review-before-write · 注入防护 · 持久化
 ├── session/   会话溯源 SessionStore(JSONL) · resume/fork
 ├── observability/ 审计追踪 TraceRecorder（状态 / 步数 / token 用量）
+├── eval/      离线评测集 EvalHarness · EvalTask · EvalReport · EvalCli（P0 基础版，复用主循环跑端到端）
 └── cli/       CodeAgentCli 入口 + REPL
 ```
 
@@ -40,7 +41,7 @@ bash build.sh
 
 测试原则：**不只看是否报错，必须断言返回值是预期的正确值**（读文件返回精确字节、grep 返回正确行号、越权路径被拒、预算到 90% 触发压缩、会话恢复还原精确消息等）。
 
-当前 **116 项断言全部通过，0 失败**（`AllTests` 累加 8 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write）。
+当前 **138 项断言全部通过，0 失败**（`AllTests` 累加 9 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测）。
 
 ## 运行
 

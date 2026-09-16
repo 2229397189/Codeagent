@@ -7,7 +7,7 @@
 
 ## 一、项目一句话
 
-用 **Java 17 零第三方依赖**从零实现一个终端编码 Agent（Codex-like），包含主循环、统一工具协议、四层上下文治理、权限沙箱、会话事件溯源五大模块；自带零依赖测试入口，**101 项断言全部断言"返回值是预期正确值"**。
+用 **Java 17 零第三方依赖**从零实现一个终端编码 Agent（Codex-like），包含主循环、统一工具协议、四层上下文治理、权限沙箱、会话事件溯源五大模块；自带零依赖测试入口，**138 项断言全部断言"返回值是预期正确值"**。
 
 ---
 
@@ -32,7 +32,7 @@
    → `session/SessionStore.java`、`session/Session.java`
 
 7. **工程质量**：零依赖测试入口覆盖全部模块，测试原则是**断言返回正确值而非仅不报错**（读文件断言精确字节、grep 断言正确行号、预算断言在 90% 触发压缩、会话断言恢复出精确消息）；CLI 单回合错误隔离，模型/网络故障不终结 REPL。
-   → `test/*`（`AgentLoopTest` / `ToolsTest` / `ContextTest` / `PermissionTest` / `SessionTest` / `CliTest` / `HardeningTest`）、`cli/CodeAgentCli.java`
+   → `test/*`（`AgentLoopTest` / `ToolsTest` / `ContextTest` / `PermissionTest` / `SessionTest` / `CliTest` / `HardeningTest` / `ReviewWriteTest` / `EvalTest`）、`cli/CodeAgentCli.java`
 
 8. **行为边界与系统提示词**：首个回合注入 system prompt（角色、工作区边界、最小改动、禁用破坏性命令）并落盘，保证 resume 出来的就是模型当初真正看到的上下文。
    → `core/SystemPrompt.java`、`cli/CodeAgentCli.java`
@@ -42,6 +42,9 @@
 
 10. **审计追踪与成本归因**：`TraceRecorder` 以 append-only JSONL 记录每回合的状态、步数、prompt/completion token，配合大结果离屏（超 32KB 落盘、上下文只留路径+预览）控制上下文成本。
    → `observability/TraceRecorder.java`、`context/ToolResultStorage.java`
+
+11. **评估与可观测（离线评测集）**：`eval/` 包实现 `EvalHarness` 把任务集端到端喂给**真实主循环**（复用同一套工具协议 / 权限 / 上下文治理 / 注入防护），`EvalReport` 聚合出成功率 / 工具准确率 / 平均步数 / 平均 token，`EvalCli` 可一键跑 `evalset/basic.jsonl` 并输出 JSON 报告。这是简历上"评估与可观测"的硬实锤（零依赖、可回归）。
+   → `eval/EvalHarness.java`、`eval/EvalReport.java`、`eval/EvalCli.java`、`evalset/basic.jsonl`
 
 ---
 
@@ -62,9 +65,9 @@
 
 - ❌ **没有 RAG / 向量检索**：代码检索目前是 grep 正则，没有 embedding、没有向量库。
 - ❌ **没有多 Agent / 规划模式**：主循环是朴素 ReAct 式（model→tool→model），没有 Plan-and-Execute、没有子 Agent 编排。
-- ❌ **没有评估平台 / 离线评测集**：已有 `TraceRecorder` 做基础审计与 token 归因，但**没有** langfuse 级别的 tracing/eval，也**没有**"N 条任务集跑成功率"的离线评测。
+- ✅ **离线评测集已实现（基础版）**：`EvalHarness` + `EvalReport` + `EvalCli` 已能跑任务集并聚合成功率 / 工具准确率 / 平均步数 / 平均 token（见 bullet 11）；样例 `evalset/basic.jsonl` 仅 4 条，扩到 30 条即简历实锤。langfuse 级 tracing 仍没做。
 - ❌ **没有 Redis/MySQL**：会话与审批都是本地文件（`codeagent.properties` / `.codeagent/`）。
-- ❌ **没有自动评测集**：现有是确定性单元测试，不是"30 条任务集跑成功率"的离线评测。
+- ✅ **自动评测集（基础版）已实现**：确定性单元测试 + `EvalHarness` 离线评测双轨；扩到 30 条任务即完整闭环。
 - ✅ **review-before-write 已完成**：edit_file / patch 在权限为 ASK 时**先生成 diff 预览、不落盘**，主循环暂停并把 diff 打到终端问 `Approve? [y/N]`，批准才写入并持久化该目标、拒绝则把结果反馈给模型。实现在 `Tool.preview` + `ToolRegistry`（ASK→预览+awaitUser）+ `AgentLoop.pendingCall` + `CodeAgentCli.runUntilDone`；测试见 `ReviewWriteTest`（14 项断言）。
 - ⚠️ **Prompt Injection 是「基线方案」不是「完整方案」**：已做**模式检测 + 边界警示**（中英文常见注入句式，strict 模式可扣留内容），但**无法覆盖语义改写 / 编码混淆**。面试照实说是「三层防御里的运行时层」。
 
@@ -73,9 +76,9 @@
 ## 五、可量化的_project facts（面试随口能报）
 
 - 语言/依赖：Java 17，**0 个第三方依赖**
-- 模块数：6（core / tools / context / permission / session / observability）+ CLI
+- 模块数：7（core / tools / context / permission / session / observability / eval）+ CLI
 - 工具数：6
-- 测试断言数：**115 项，全绿**（8 个测试类）
+- 测试断言数：**138 项，全绿**（9 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测）
 - 上下文水位：70% warn / 90% auto / 100% hard（对齐 Codex）
 - 大结果离屏：预览 200 字符 + 完整落盘路径
 
@@ -83,7 +86,7 @@
 
 ## 六、推荐的下一步（按面试收益排序）
 
-1. ✅ **diff 预览 + 审批**：已实现（见上，review-before-write）。
-2. **离线评测集**：30 条任务跑成功率/工具准确率/格式通过率，这就是简历上"评估与可观测"的实锤。
-3. **在 TraceRecorder 之上做评测**：把 trace 聚合成成功率 / 工具准确率 / 平均步数 / 平均 token，产出离线评测报告（trace 基础已有，缺聚合）。
-4. 再往后才是 RAG、多 Agent、Plan-and-Execute。
+1. ✅ **diff 预览 + 审批**：已实现（review-before-write）。
+2. ✅ **离线评测集**：已实现 `EvalHarness` + `EvalReport`（样例 4 条任务，扩到 30 条即简历实锤）。
+3. ✅ **在 TraceRecorder 之上做评测**：已实现——`EvalReport` 聚合成功率 / 工具准确率 / 平均步数 / 平均 token。
+4. 再往后才是 RAG、多 Agent、Plan-and-Execute（仍属 Phase 2，见"明确没做"）。

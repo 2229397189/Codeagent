@@ -76,6 +76,19 @@ public class ContextTest {
             List<Message> out2 = mc.apply(out);
             fails += check("micro is idempotent on [used tool]",
                     "[used tool grep]".equals(out2.get(2).content));
+
+            // 真实模型偶发 tool 消息 name 为 null（glm 边界）：必须不抛 NPE，且无法识别工具名时不裁剪
+            List<Message> msgsNull = new ArrayList<>();
+            msgsNull.add(Message.user("u0"));
+            msgsNull.add(Message.tool("t1", null, "null-name-result")); // distant (i=1 < keepFrom)
+            msgsNull.add(Message.user("u2"));
+            msgsNull.add(Message.assistant("a3"));
+            msgsNull.add(Message.tool("t2", "grep", "g"));
+            msgsNull.add(Message.user("u4"));
+            // n=6, keepRounds=1 => keepFrom=4；index1 是 distant 且 name 为 null
+            List<Message> outNull = new MicroCompact(1, Set.of("read_file")).apply(msgsNull);
+            fails += check("micro handles null tool name without NPE",
+                    "null-name-result".equals(outNull.get(1).content));
         }
 
         // ---- ToolResultStorage：大结果离屏 ----

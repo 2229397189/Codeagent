@@ -15,6 +15,7 @@ public class AllTests {
         failed += CliTest.run();
         failed += HardeningTest.run();
         failed += ReviewWriteTest.run();
+        failed += EvalTest.run();
 
         if (failed == 0) {
             System.out.println("ALL TESTS PASSED");

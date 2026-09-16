@@ -13,3 +13,7 @@ codeagent.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# eval run output (transient)
+.eval_real.txt
+.test_*.txt

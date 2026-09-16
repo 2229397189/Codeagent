@@ -27,6 +27,7 @@ public class MicroCompact {
         for (int i = 0; i < n; i++) {
             Message m = messages.get(i);
             if (m.role == Message.Role.tool
+                    && m.name != null
                     && !keepTools.contains(m.name)
                     && i < keepFrom
                     && m.content != null
