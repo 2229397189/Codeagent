@@ -71,6 +71,36 @@ java -cp out com.codeagent.cli.CodeAgentCli --mock
 
 > 工程细节：单回合的模型/网络异常会被隔离，返回 `error: ...` 后 REPL 继续可用（见 `CliTest`）。
 
+## 部署（服务器 / Docker）
+
+代码零第三方依赖，部署只需 **JDK 17**。API Key 永远只通过环境变量 `CODEAGENT_API_KEY` 传入，绝不写进代码或镜像。
+
+### 方式 A：裸 JDK 运行（最简）
+
+```bash
+# 1) 拉取代码
+git clone https://github.com/2229397189/Codeagent.git && cd Codeagent
+# 2) 编译 + 测试（Linux/macOS）
+bash build.sh          # Windows 用 build.cmd
+# 3) 运行（先设好 key）
+export CODEAGENT_API_KEY=你的key
+java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.6v
+```
+
+### 方式 B：Docker（推荐，环境隔离）
+
+```bash
+docker build -t codeagent .
+docker run -it -e CODEAGENT_API_KEY=你的key \
+  -v "$PWD:/workspace" codeagent --model glm-4.6v
+```
+
+- 镜像内默认从环境变量读取 `CODEAGENT_API_KEY`，无需在命令行暴露明文。
+- 挂载 `-v "$PWD:/workspace"` 把当前目录作为 Agent 工作区（路径沙箱限制它只能访问该目录）。
+- 切模型：命令末尾追加 `--model glm-4.5-air`。
+
+> 本项目是**交互式终端 Agent**：生产部署建议配合 `tmux`/`screen`，或容器 `-it` 保持会话；CI / 批量回归用 `--mock` 跑离线测试。
+
 ## 安全与可观测（企业级）
 
 | 能力 | 实现 | 说明 |

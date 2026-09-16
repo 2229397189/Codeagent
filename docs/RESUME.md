@@ -75,7 +75,7 @@
 - 语言/依赖：Java 17，**0 个第三方依赖**
 - 模块数：6（core / tools / context / permission / session / observability）+ CLI
 - 工具数：6
-- 测试断言数：**116 项，全绿**（8 个测试类）
+- 测试断言数：**115 项，全绿**（8 个测试类）
 - 上下文水位：70% warn / 90% auto / 100% hard（对齐 Codex）
 - 大结果离屏：预览 200 字符 + 完整落盘路径
 
