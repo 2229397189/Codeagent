@@ -5,11 +5,21 @@ import com.codeagent.context.DefaultContextGovernance;
 import com.codeagent.context.MicroCompact;
 import com.codeagent.context.ToolResultStorage;
 import com.codeagent.core.*;
+import com.codeagent.mcp.McpClient;
+import com.codeagent.mcp.McpLauncher;
+import com.codeagent.mcp.McpTool;
+import com.codeagent.memory.LongTermMemory;
+import com.codeagent.memory.MemoryRecord;
+import com.codeagent.memory.ShortTermMemory;
 import com.codeagent.observability.TraceRecorder;
 import com.codeagent.permission.DefaultPermissionManager;
 import com.codeagent.permission.InjectionGuard;
+import com.codeagent.rag.RagProvider;
 import com.codeagent.session.Session;
+import com.codeagent.skills.Skill;
+import com.codeagent.skills.SkillRegistry;
 import com.codeagent.tools.*;
+import com.codeagent.workflow.Coordinator;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -17,7 +27,9 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -39,6 +51,15 @@ public class CodeAgentCli {
     private final BufferedReader console;
     /** 审批策略（review-before-write）：默认从终端读 y/N；测试可注入确定性策略 */
     public ApprovePolicy approvePolicy;
+
+    // ---- Phase-2 可选能力（默认全关，由 --memory/--rag/--skills/--mcp/--workflow 启用）----
+    private LongTermMemory longTerm;
+    private ShortTermMemory shortTerm;
+    private RagProvider rag;
+    private SkillRegistry skills;
+    private final List<McpClient> mcpClients = new ArrayList<>();
+    /** 当前回合的用户输入，供记忆/RAG/技能做本回合的上下文召回 */
+    private String lastUserQuery = "";
 
     public CodeAgentCli(AgentConfig cfg) {
         this.cfg = cfg;
@@ -77,6 +98,78 @@ public class CodeAgentCli {
         this.loop.storage = new ToolResultStorage(ws.resolve(".codeagent/offscreen"));
         this.loop.largeResultBytes = cfg.largeResultKb * 1024;
         this.loop.model.chatModel = buildModel();
+
+        initOptionalFeatures();
+    }
+
+    /**
+     * 按需装配 Phase-2 能力。全部走「开关 + 惰性初始化 + 失败不致命」：
+     * 任一能力初始化失败（如 MCP server 起不来）只告警，不影响 Agent 正常运行。
+     */
+    private void initOptionalFeatures() {
+        if (cfg.enableMemory) {
+            this.longTerm = new LongTermMemory(Path.of(cfg.workspace).resolve(".codeagent/memory.jsonl"));
+            this.shortTerm = new ShortTermMemory();
+        }
+        if (cfg.enableRag && cfg.ragDir != null) {
+            this.rag = new RagProvider();
+            try {
+                this.rag.index(Path.of(cfg.ragDir));
+            } catch (Exception e) {
+                System.err.println("[rag] indexing failed: " + e.getMessage());
+            }
+        }
+        if (cfg.enableSkills) {
+            this.skills = new SkillRegistry();
+            if (cfg.skillsDir != null) this.skills.loadFromDir(Path.of(cfg.skillsDir));
+        }
+        for (String cmd : cfg.mcpCommands) {
+            try {
+                McpClient mc = McpLauncher.launch(splitCommand(cmd), 5_000);
+                mcpClients.add(mc);
+                for (Map<String, Object> td : mc.toolDefs()) {
+                    Object schema = td.get("inputSchema");
+                    registry.register(new McpTool(mc,
+                            td.get("name") == null ? "mcp" : String.valueOf(td.get("name")),
+                            td.get("description") == null ? "" : String.valueOf(td.get("description")),
+                            schema instanceof Map ? (Map<String, Object>) schema : new LinkedHashMap<>()));
+                }
+            } catch (Exception e) {
+                System.err.println("[mcp] failed to launch: " + cmd + " (" + e.getMessage() + ")");
+            }
+        }
+    }
+
+    private static List<String> splitCommand(String cmd) {
+        List<String> parts = new ArrayList<>();
+        for (String p : cmd.trim().split("\\s+")) {
+            if (!p.isEmpty()) parts.add(p);
+        }
+        return parts;
+    }
+
+    /**
+     * 组装 system prompt：基础规则 + 本回合动态召回的上下文（长期记忆 / 短期黑板 / RAG / 激活技能）。
+     * 召回是确定性的（BM25 / 触发词），不依赖模型，可回归、可解释。
+     */
+    private String buildSystemPrompt() {
+        StringBuilder sb = new StringBuilder(SystemPrompt.defaultPrompt(cfg.workspace));
+        if (cfg.enableMemory && longTerm != null) {
+            List<MemoryRecord> recalled = longTerm.recall(lastUserQuery, 5);
+            if (!recalled.isEmpty()) sb.append("\n\n").append(LongTermMemory.render(recalled));
+        }
+        if (cfg.enableMemory && shortTerm != null && shortTerm.size() > 0) {
+            sb.append("\n\n").append(ShortTermMemory.render(shortTerm.recent()));
+        }
+        if (cfg.enableRag && rag != null) {
+            String ctx = rag.retrieve(lastUserQuery, 4);
+            if (!ctx.isEmpty()) sb.append("\n\n").append(ctx);
+        }
+        if (cfg.enableSkills && skills != null) {
+            Skill active = skills.route(lastUserQuery);
+            sb.append("\n\n").append(skills.renderForPrompt(active));
+        }
+        return sb.toString();
     }
 
     private ChatModel buildModel() {
@@ -98,12 +191,28 @@ public class CodeAgentCli {
         if (s.isEmpty()) return "";
         if (s.startsWith("/")) return command(s);
 
+        // 多 Agent 工作流模式：Plan-and-Execute（planner -> executor(s) -> synthesizer）
+        if (cfg.enableWorkflow) {
+            try {
+                Coordinator coordinator = new Coordinator(loop.model.chatModel, registry, perms);
+                String result = coordinator.execute(s);
+                trace.turn("WORKFLOW", 0, gov.budget().promptTokens, gov.budget().completionTokens, result);
+                return result;
+            } catch (Exception e) {
+                return "error: " + e.getMessage();
+            }
+        }
+
+        lastUserQuery = s; // 供记忆 / RAG / 技能做本回合的确定性召回
         List<Message> messages = new ArrayList<>(session.messages());
         // 首个回合注入 system prompt 并落盘，保证 replay 出来的就是模型当初真正看到的上下文
         if (messages.isEmpty()) {
-            Message sys = Message.system(SystemPrompt.defaultPrompt(cfg.workspace));
+            Message sys = Message.system(buildSystemPrompt());
             session.append(sys);
             messages.add(sys);
+        } else {
+            // 后续回合刷新动态上下文（记忆 / RAG / 技能随输入变化）；system 恒在 index 0，不会重复落盘
+            messages.set(0, Message.system(buildSystemPrompt()));
         }
         int persisted = messages.size(); // 已在日志中的条数，之后的新消息才需要 append
         messages.add(Message.user(s));
@@ -185,6 +294,18 @@ public class CodeAgentCli {
         }
     }
 
+    /** /status 里的能力开关摘要：让人一眼看清当前启用了哪些 Phase-2 能力 */
+    private String featuresSummary() {
+        List<String> on = new ArrayList<>();
+        if (cfg.enableMemory) on.add("memory");
+        if (cfg.enableRag) on.add("rag");
+        if (cfg.enableSkills) on.add("skills");
+        if (!cfg.mcpCommands.isEmpty()) on.add("mcp(" + mcpClients.size() + ")");
+        if (cfg.enableWorkflow) on.add("workflow");
+        if (on.isEmpty()) return "none (enable with --memory/--rag/--skills/--mcp/--workflow)";
+        return String.join(", ", on);
+    }
+
     private String command(String s) {
         String[] parts = s.split("\\s+", 3);
         String cmd = parts[0];
@@ -195,7 +316,10 @@ public class CodeAgentCli {
                         "/status               model, workspace, session and context budget",
                         "/compact              preview auto-compaction (does not mutate the append-only log)",
                         "/approve <tool> <path> approve a write target (persisted)",
+                        "/memory <text>       记住一条长期事实（需 --memory）",
+                        "/forget <id>         删除一条长期记忆",
                         "/session              current session info",
+                        "flags: --memory --rag [dir] --skills [dir] --workflow --mcp <cmd>",
                         "/trace                audit trace file and event count",
                         "/exit | /quit         leave");
             case "/tools": {
@@ -217,6 +341,7 @@ public class CodeAgentCli {
                         "tools:      " + registry.specs().size(),
                         "max steps:  " + cfg.maxSteps,
                         "trace:      " + trace.size() + " events",
+                        "features:   " + featuresSummary(),
                         "security:   injection-guard=on accept-edits=" + perms.acceptEdits);
             }
             case "/compact": {
@@ -229,6 +354,19 @@ public class CodeAgentCli {
                 if (parts.length < 3) return "usage: /approve <tool> <path>";
                 perms.approve(parts[1], parts[2]);
                 return "approved: " + parts[1] + " " + parts[2];
+            }
+            case "/memory": {
+                if (longTerm == null) return "memory disabled (start with --memory)";
+                if (parts.length < 2) return "usage: /memory <text>";
+                String id = longTerm.remember(parts[1], MemoryRecord.Type.USER, "user", 0.8);
+                if (shortTerm != null) shortTerm.note(parts[1], 0.8);
+                return "remembered: " + id + " (total=" + longTerm.size() + ")";
+            }
+            case "/forget": {
+                if (longTerm == null) return "memory disabled (start with --memory)";
+                if (parts.length < 2) return "usage: /forget <id>";
+                longTerm.forget(parts[1]);
+                return "forgot: " + parts[1] + " (total=" + longTerm.size() + ")";
             }
             case "/trace":
                 return "trace: " + trace.file() + " events=" + trace.size();

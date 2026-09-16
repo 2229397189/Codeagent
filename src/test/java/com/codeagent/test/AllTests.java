@@ -16,6 +16,13 @@ public class AllTests {
         failed += HardeningTest.run();
         failed += ReviewWriteTest.run();
         failed += EvalTest.run();
+        // M12：Phase-2 能力（检索 / 记忆 / 技能 / RAG / MCP / 多 Agent 工作流）
+        failed += RetrievalTest.run();
+        failed += MemoryTest.run();
+        failed += SkillsTest.run();
+        failed += RagTest.run();
+        failed += McpTest.run();
+        failed += WorkflowTest.run();
 
         if (failed == 0) {
             System.out.println("ALL TESTS PASSED");

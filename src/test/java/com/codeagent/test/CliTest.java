@@ -67,6 +67,56 @@ public class CliTest {
             String ap = cli.handle("/approve edit_file a.txt");
             fails += check("/approve confirms target", "approved: edit_file a.txt".equals(ap));
 
+            // ---- Phase-2 能力：默认关闭时给出明确提示，不静默失败 ----
+            String memOff = cli.handle("/memory this project uses zero middleware");
+            fails += check("/memory is disabled by default", memOff != null && memOff.contains("memory disabled"));
+            String st3 = cli.handle("/status");
+            fails += check("/status reports no features by default", st3.contains("features:   none"));
+
+            // ---- 开启记忆后的 /memory 与 /forget ----
+            Path ws2 = Files.createTempDirectory("codeagent-cli-mem");
+            AgentConfig cfg2 = new AgentConfig();
+            cfg2.workspace = ws2.toString();
+            cfg2.useMock = true;
+            cfg2.enableMemory = true;
+            CodeAgentCli cli2 = new CodeAgentCli(cfg2);
+            String st4 = cli2.handle("/status");
+            fails += check("/status reports the memory feature", st4.contains("features:   memory"));
+
+            String mem1 = cli2.handle("/memory 用户偏好中文回复");
+            fails += check("/memory stores a fact", mem1 != null && mem1.startsWith("remembered:"));
+            fails += check("/memory reports a total of 1", mem1 != null && mem1.contains("total=1"));
+            String mem2 = cli2.handle("/memory 该项目刻意不使用中间件");
+            fails += check("/memory reports a total of 2", mem2 != null && mem2.contains("total=2"));
+
+            String usage = cli2.handle("/memory");
+            fails += check("/memory requires an argument", "usage: /memory <text>".equals(usage));
+
+            // 记忆要能跨实例持久化（换一个 CLI 实例读同一工作区）
+            AgentConfig cfg3 = new AgentConfig();
+            cfg3.workspace = ws2.toString();
+            cfg3.useMock = true;
+            cfg3.enableMemory = true;
+            CodeAgentCli cli3 = new CodeAgentCli(cfg3);
+            String st5 = cli3.handle("/status");
+            fails += check("memory survives a CLI restart", st5.contains("features:   memory"));
+
+            String id = mem1.substring("remembered: ".length(), mem1.indexOf(" (total="));
+            String forgot = cli3.handle("/forget " + id);
+            fails += check("/forget removes the record", forgot != null && forgot.contains("total=1"));
+
+            // ---- --rag / --skills 的目录参数是可选的（不该吞掉后续开关）----
+            AgentConfig parsed = AgentConfig.load(new String[]{
+                    "--memory", "--skills", "--rag", "docs", "--workflow"});
+            fails += check("--skills without a dir still enables skills", parsed.enableSkills);
+            fails += check("--skills defaults to .codeagent/skills",
+                    ".codeagent/skills".equals(parsed.skillsDir));
+            fails += check("--rag still parses after a bare --skills", parsed.enableRag);
+            fails += check("--rag keeps its explicit dir", "docs".equals(parsed.ragDir));
+            fails += check("--workflow is enabled", parsed.enableWorkflow);
+            AgentConfig bare = AgentConfig.load(new String[]{"--rag"});
+            fails += check("bare --rag falls back to the default dir", "docs".equals(bare.ragDir));
+
             // 模型故障隔离：单回合失败不应终结 REPL
             cli.setModel(new ChatModel() {
                 @Override

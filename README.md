@@ -17,19 +17,28 @@
 
 > 注：原方案锁定 Spring Boot 3.3 + Spring AI 1.0 + Picocli；因当前构建环境无 Maven、且要求"测试必须返回正确值"，改为零依赖纯 Java 实现，架构完全对齐原方案。如需要 Spring AI 版可另开分支。
 
-## 五大模块（目录对齐原方案）
+## 模块结构
 
 ```
 src/main/java/com/codeagent/
-├── core/      主循环 AgentLoop · ChatModelAdapter · Mock/OpenAI 模型 · SystemPrompt · 领域类型 · 配置
-├── tools/     统一工具协议 ToolRegistry · Read/Grep/List/Edit/Patch/RunCommand
-├── context/   上下文治理 ContextGovernance · Budget · Micro/Auto-Compact · 大结果离屏
-├── permission/ 权限 PermissionManager · 沙箱 · 危险命令拦截 · review-before-write · 注入防护 · 持久化
-├── session/   会话溯源 SessionStore(JSONL) · resume/fork
+├── core/        主循环 AgentLoop · ChatModelAdapter · Mock/OpenAI 模型 · SystemPrompt · 领域类型 · 配置
+├── tools/       统一工具协议 ToolRegistry · Read/Grep/List/Edit/Patch/RunCommand
+├── context/     上下文治理 ContextGovernance · Budget · Micro/Auto-Compact · 大结果离屏
+├── permission/  权限 PermissionManager · 沙箱 · 危险命令拦截 · review-before-write · 注入防护 · 持久化
+├── session/     会话溯源 SessionStore(JSONL) · resume/fork
 ├── observability/ 审计追踪 TraceRecorder（状态 / 步数 / token 用量）
-├── eval/      离线评测集 EvalHarness · EvalTask · EvalReport · EvalCli（P0 基础版，复用主循环跑端到端）
-└── cli/       CodeAgentCli 入口 + REPL
+├── eval/        离线评测集 EvalHarness · EvalTask · EvalReport · EvalCli（复用主循环跑端到端）
+├── retrieval/   ★ 检索底座：Tokenizer（中日英混合分词）· InvertedIndex · BM25（记忆与 RAG 共用）
+├── memory/      ★ 记忆：ShortTermMemory（会话内有界黑板）+ LongTermMemory（跨会话 JSONL 持久化）
+├── skills/      ★ 技能路由：SkillRegistry 按触发词打分激活专业化 prompt，支持 .md 热加载
+├── rag/         ★ 基础版 RAG：Chunker 切分 → CorpusIndexer 建索引 → BM25 召回 → 注入上下文
+├── mcp/         ★ MCP 客户端：零依赖 JSON-RPC 2.0 over stdio，远端工具适配成本地 Tool
+├── workflow/    ★ 多 Agent：Plan-and-Execute（planner / executor / synthesizer 子 Agent）
+└── cli/         CodeAgentCli 入口 + REPL
 ```
+
+> ★ 为 Phase-2 Agent 能力，**默认全部关闭**，用命令行开关启用（见下）。
+> 边界：RAG 是 **lexical（BM25）基础版**，无 embedding / 向量库 / rerank；多 Agent 是**串行** Plan-and-Execute，无并行、无 Reflection 自我纠错。简历口径见 `docs/RESUME.md`。
 
 ## 构建与测试
 
@@ -41,7 +50,7 @@ bash build.sh
 
 测试原则：**不只看是否报错，必须断言返回值是预期的正确值**（读文件返回精确字节、grep 返回正确行号、越权路径被拒、预算到 90% 触发压缩、会话恢复还原精确消息等）。
 
-当前 **138 项断言全部通过，0 失败**（`AllTests` 累加 9 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测）。
+当前 **215 项断言全部通过，0 失败**（`AllTests` 累加 15 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测 / 检索 / 记忆 / 技能 / RAG / MCP / 工作流）。
 
 ## 运行
 
@@ -55,7 +64,17 @@ java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.5-air --base-url https
 
 # 离线 mock（无需网络/key，验证主循环与工具协议）
 java -cp out com.codeagent.cli.CodeAgentCli --mock
+
+# 按需开启 Phase-2 Agent 能力（可任意组合）
+java -cp out com.codeagent.cli.CodeAgentCli --mock \
+  --memory                 # 短期黑板 + 长期记忆（.codeagent/memory.jsonl）
+  --rag docs               # 对 docs/ 做 BM25 索引并注入检索上下文（目录参数可选，默认 docs）
+  --skills .codeagent/skills  # 技能路由（目录参数可选，默认 .codeagent/skills）
+  --workflow               # 多 Agent：Plan-and-Execute（planner/executor/synthesizer）
+  --mcp "npx -y @modelcontextprotocol/server-filesystem ."  # 可重复传多个 MCP server
 ```
+
+> `--rag` / `--skills` 的目录参数是**可选**的：不带参数时使用默认目录，因此 `--skills --rag docs` 这类组合不会互相吞参数。
 
 ### REPL 命令
 
@@ -66,6 +85,10 @@ java -cp out com.codeagent.cli.CodeAgentCli --mock
 | `/compact` | 预览 auto-compaction 效果（**不改动** append-only 日志） |
 | `/approve <tool> <path>` | 审批某个写目标，并持久化到 `.codeagent/permissions.json` |
 | `/session` | 当前会话文件与事件数 |
+| `/memory <text>` | 记住一条长期事实（需 `--memory`）；跨会话持久化到 `.codeagent/memory.jsonl` |
+| `/forget <id>` | 删除指定 id 的长期记忆（需 `--memory`） |
+| `/trace` | 审计追踪文件与事件数 |
+| `/status` | 另含 `features:` 一行，显示当前启用了哪些 Phase-2 能力 |
 
 > **review-before-write（人类在环）**：写工具（edit_file / patch）在未审批时会**先生成 diff 预览、不落盘**，主循环暂停并把 diff 打到终端询问 `Approve this change? [y/N]`；批准才真正写入并持久化该目标，拒绝则把结果反馈给模型由其调整。`--accept-edits` 模式下跳过询问直接写入。
 | `/help` `/exit` | 帮助 / 退出 |
@@ -117,7 +140,10 @@ docker run -it -e CODEAGENT_API_KEY=你的key \
 
 ## 简历与面试
 
-见 `docs/RESUME.md`：每条 bullet 都对到具体代码文件，并**明确列出本项目没做的部分**（RAG / 多 Agent / 评估平台 / Prompt Injection 清洗等），防止面试过度宣称。
+见 `docs/RESUME.md`：
+- 每条 bullet 都对到具体代码文件；
+- **明确列出本项目没做的部分 / 只是基础版的部分**，防止面试过度宣称；
+- 第七节是**中间件选型能力**——本项目是零中间件设计（JSONL 替代 MySQL、进程内 BM25 替代 ES/向量库、stdio 子进程替代 gRPC），文档给出「为什么不用」与「规模化该上什么、为什么」的完整论证（Redis 锁与幂等键、MQ 可靠异步、混合召回 + rerank、OpenTelemetry、Agent 特有的密钥泄露路径）。
 
 ## 调研来源（设计思想借鉴，非代码复制）
 
