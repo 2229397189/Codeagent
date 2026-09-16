@@ -44,7 +44,14 @@ public class ToolRegistry {
             return ToolResult.error("permission denied: " + call.name);
         }
         if (d == PermissionManager.Decision.ASK) {
-            return ToolResult.error("approval required: " + call.name + " (approve first)");
+            // review-before-write：先预览 diff、不落盘，交由人类审批。
+            // 主循环见到 awaitUser=true 会暂停并把 diff 展示给人，批准后才真正 execute。
+            ToolResult preview = t.preview(call, perms);
+            if (preview != null) {
+                preview.awaitUser = true;
+                return preview;
+            }
+            return ToolResult.error("approval required: " + call.name + " (no preview supported)");
         }
         return t.execute(call, perms);
     }

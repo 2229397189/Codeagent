@@ -10,7 +10,9 @@ import java.util.Properties;
  * API Key 永远只从环境变量读取，绝不写进代码或仓库。
  */
 public class AgentConfig {
-    public String model = "glm-4.6";
+    /** 默认 glm-4.6v：用户资源包生效中（赠送 599 万 token，至 2026-12-13）。
+     *  另有 glm-4.5-air（1195 万 token，纯文本编码更省）可用 --model 切换。 */
+    public String model = "glm-4.6v";
     public String baseUrl = "https://open.bigmodel.cn/api/paas/v4";
     public String apiKey = System.getenv("CODEAGENT_API_KEY");
     public boolean useMock = "true".equalsIgnoreCase(System.getenv("CODEAGENT_MOCK"));

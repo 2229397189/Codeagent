@@ -26,6 +26,8 @@ public class AgentLoop {
         public List<Message> messages;
         /** 本回合实际执行的步数（用于审计与成本归因） */
         public int steps;
+        /** 因 review-before-write 暂停时，待人类审批的写工具调用（非空表示等人批准） */
+        public ToolCall pendingCall;
 
         public AgentTurnResult(TurnStatus s, List<Message> m) {
             this.status = s;
@@ -68,7 +70,11 @@ public class AgentLoop {
                 }
                 messages.add(Message.tool(call.id, call.name, out));
                 if (r.fatal) return result(TurnStatus.FAILED, messages, step + 1);
-                if (r.awaitUser) return result(TurnStatus.AWAITING_USER, messages, step + 1);
+                if (r.awaitUser) {
+                    AgentTurnResult ar = result(TurnStatus.AWAITING_USER, messages, step + 1);
+                    ar.pendingCall = call; // 交出待审批的写调用，由 CLI 展示 diff 并等待批准
+                    return ar;
+                }
                 if (r.stop) return result(TurnStatus.CONTROLLED_STOP, messages, step + 1);
             }
         }

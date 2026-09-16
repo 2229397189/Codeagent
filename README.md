@@ -40,14 +40,17 @@ bash build.sh
 
 测试原则：**不只看是否报错，必须断言返回值是预期的正确值**（读文件返回精确字节、grep 返回正确行号、越权路径被拒、预算到 90% 触发压缩、会话恢复还原精确消息等）。
 
-当前 **101 项断言全部通过，0 失败**（`AllTests` 累加 7 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固）。
+当前 **116 项断言全部通过，0 失败**（`AllTests` 累加 8 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write）。
 
 ## 运行
 
 ```bash
 # 真实模型（设置 key，不写进代码/仓库）
 set CODEAGENT_API_KEY=你的key
-java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.6 --base-url https://open.bigmodel.cn/api/paas/v4
+java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.6v --base-url https://open.bigmodel.cn/api/paas/v4
+
+# 也可用纯文本编码模型（token 更多、更省，适合纯 coding）
+java -cp out com.codeagent.cli.CodeAgentCli --model glm-4.5-air --base-url https://open.bigmodel.cn/api/paas/v4
 
 # 离线 mock（无需网络/key，验证主循环与工具协议）
 java -cp out com.codeagent.cli.CodeAgentCli --mock
@@ -62,6 +65,8 @@ java -cp out com.codeagent.cli.CodeAgentCli --mock
 | `/compact` | 预览 auto-compaction 效果（**不改动** append-only 日志） |
 | `/approve <tool> <path>` | 审批某个写目标，并持久化到 `.codeagent/permissions.json` |
 | `/session` | 当前会话文件与事件数 |
+
+> **review-before-write（人类在环）**：写工具（edit_file / patch）在未审批时会**先生成 diff 预览、不落盘**，主循环暂停并把 diff 打到终端询问 `Approve this change? [y/N]`；批准才真正写入并持久化该目标，拒绝则把结果反馈给模型由其调整。`--accept-edits` 模式下跳过询问直接写入。
 | `/help` `/exit` | 帮助 / 退出 |
 
 > 工程细节：单回合的模型/网络异常会被隔离，返回 `error: ...` 后 REPL 继续可用（见 `CliTest`）。
@@ -72,7 +77,7 @@ java -cp out com.codeagent.cli.CodeAgentCli --mock
 |------|------|------|
 | 行为边界 | `core/SystemPrompt` | 首个回合注入 system prompt 并落盘，replay 出来的就是模型当初真正看到的上下文 |
 | Prompt Injection 防护 | `permission/InjectionGuard` | 对进入上下文的工具输出做模式检测；命中加边界警示，strict 模式直接扣留内容 |
-| 能力边界 | `permission/DefaultPermissionManager` | 路径沙箱 + 危险命令拦截 + 写前审批；`--accept-edits` 显式放开 |
+| 能力边界 | `permission/DefaultPermissionManager` | 路径沙箱 + 危险命令拦截 + **review-before-write（先展示 diff 再批准才落盘）**；`--accept-edits` 显式放开 |
 | 审计追踪 | `observability/TraceRecorder` | 每回合记录状态/步数/prompt+completion token，append-only JSONL |
 | 大结果离屏 | `context/ToolResultStorage` | 超过 `largeResultKb`（默认 32KB）的工具结果落盘，上下文只留路径+预览 |
 | 故障隔离 | `cli/CodeAgentCli` | 单回合模型/网络异常返回 `error: ...`，REPL 继续可用 |

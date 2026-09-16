@@ -12,6 +12,7 @@ import com.codeagent.session.Session;
 import com.codeagent.tools.*;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -34,6 +35,11 @@ public class CodeAgentCli {
     private final TraceRecorder trace;
     private final InjectionGuard guard;
 
+    /** REPL 与审批提示共用的标准输入读取器 */
+    private final BufferedReader console;
+    /** 审批策略（review-before-write）：默认从终端读 y/N；测试可注入确定性策略 */
+    public ApprovePolicy approvePolicy;
+
     public CodeAgentCli(AgentConfig cfg) {
         this.cfg = cfg;
         Path ws = Path.of(cfg.workspace).toAbsolutePath().normalize();
@@ -52,6 +58,8 @@ public class CodeAgentCli {
         this.session = Session.open(ws.resolve(".codeagent/sessions"), "default");
         this.trace = new TraceRecorder(ws.resolve(".codeagent/traces/trace.jsonl"));
         this.guard = new InjectionGuard(false);
+        this.console = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        this.approvePolicy = new ConsoleApprovePolicy(console);
 
         ContextBudget budget = new ContextBudget();
         budget.limit = 128_000;
@@ -102,7 +110,7 @@ public class CodeAgentCli {
 
         AgentLoop.AgentTurnResult res;
         try {
-            res = loop.runTurn(messages, registry);
+            res = runUntilDone(messages, registry); // 含 review-before-write 的审批循环
         } catch (Exception e) {
             // 模型/网络故障不应终结 REPL：单回合失败要可恢复
             trace.turn("ERROR", 0, 0, 0, e.getMessage());
@@ -122,6 +130,59 @@ public class CodeAgentCli {
             return "[" + res.status.name() + "] " + body;
         }
         return body;
+    }
+
+    /**
+     * 驱动主循环直到终态；中途遇到 review-before-write 暂停（AWAITING_USER）时，
+     * 先把 diff 展示给人，等人批准/拒绝后再继续：批准则落盘并续跑，拒绝则把结果反馈给模型。
+     */
+    private AgentLoop.AgentTurnResult runUntilDone(List<Message> messages, ToolRegistry registry) {
+        AgentLoop.AgentTurnResult res;
+        int totalSteps = 0;
+        int reviews = 0;
+        while (true) {
+            res = loop.runTurn(messages, registry);
+            totalSteps += res.steps;
+            if (res.status != AgentLoop.TurnStatus.AWAITING_USER || res.pendingCall == null) break;
+
+            // review-before-write：把待审批的 diff 展示给人，等批准/拒绝
+            if (++reviews > cfg.maxSteps) {
+                replaceLastToolMessage(messages, "[too many pending approvals; stopped for safety]");
+                return new AgentLoop.AgentTurnResult(AgentLoop.TurnStatus.CONTROLLED_STOP, messages);
+            }
+            ToolCall pending = res.pendingCall;
+            String diff = lastToolOutput(messages);
+            boolean ok = approvePolicy.approve(pending.name, diff == null ? "" : diff);
+            if (ok) {
+                perms.approve(pending); // 持久化，后续同目标写不再询问
+                ToolResult applied = registry.execute(pending, perms); // 现在 ALLOW -> 真正落盘
+                replaceLastToolMessage(messages, applied.output == null ? "" : applied.output);
+                trace.event("approve", pending.name + " " + pending.argStr("path"));
+            } else {
+                replaceLastToolMessage(messages, "[rejected by user]");
+                trace.event("reject", pending.name + " " + pending.argStr("path"));
+            }
+        }
+        res.steps = totalSteps; // 累计步数，供审计与成本归因
+        return res;
+    }
+
+    /** 取最近一条 tool 消息的输出（即待审批的 diff 预览） */
+    private static String lastToolOutput(List<Message> msgs) {
+        for (int i = msgs.size() - 1; i >= 0; i--) {
+            if (msgs.get(i).role == Message.Role.tool) return msgs.get(i).content;
+        }
+        return null;
+    }
+
+    /** 用审批/拒绝后的真实结果替换最近一条 tool 消息（替换掉占位用的 awaitUser 预览） */
+    private static void replaceLastToolMessage(List<Message> msgs, String output) {
+        for (int i = msgs.size() - 1; i >= 0; i--) {
+            if (msgs.get(i).role == Message.Role.tool) {
+                msgs.get(i).content = output;
+                return;
+            }
+        }
     }
 
     private String command(String s) {
@@ -215,14 +276,42 @@ public class CodeAgentCli {
         }
     }
 
+    /** 审批策略：review-before-write 时由它决定要不要批准落盘 */
+    public interface ApprovePolicy {
+        /** 返回 true 批准并落盘，false 拒绝 */
+        boolean approve(String toolName, String diff);
+    }
+
+    /** 默认实现：把 diff 打到终端，从标准输入读 y/N */
+    public static class ConsoleApprovePolicy implements ApprovePolicy {
+        private final BufferedReader in;
+
+        public ConsoleApprovePolicy(BufferedReader in) {
+            this.in = in;
+        }
+
+        @Override
+        public boolean approve(String toolName, String diff) {
+            System.out.println("=== review-before-write: " + toolName + " ===");
+            System.out.println(diff);
+            System.out.print("Approve this change? [y/N] ");
+            System.out.flush();
+            try {
+                String line = in.readLine();
+                return line != null && (line.equalsIgnoreCase("y") || line.equalsIgnoreCase("yes"));
+            } catch (IOException e) {
+                return false;
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         AgentConfig cfg = AgentConfig.load(args);
         CodeAgentCli cli = new CodeAgentCli(cfg);
         System.out.println(cli.banner());
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         while (true) {
             System.out.print("codeagent> ");
-            String line = br.readLine();
+            String line = cli.console.readLine();
             if (line == null) break;
             String out = cli.handle(line);
             if (out == null) {

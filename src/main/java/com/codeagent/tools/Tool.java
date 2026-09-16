@@ -14,4 +14,13 @@ public interface Tool {
     ToolSpec spec();
 
     ToolResult execute(ToolCall call, PermissionManager perms);
+
+    /**
+     * 可选：写前预览（dry-run）。返回将产生的 diff / 结果预览，但**不落盘**。
+     * 默认不支持（返回 null）；由写类工具（edit_file / patch）覆写。
+     * review-before-write 依赖它：权限为 ASK 时先预览给人看，批准后才真正 execute。
+     */
+    default ToolResult preview(ToolCall call, PermissionManager perms) {
+        return null;
+    }
 }

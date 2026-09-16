@@ -69,10 +69,15 @@ public class PermissionTest {
             ToolResult rDanger = reg.execute(new ToolCall("d1", "run_command", Map.of("command", "sudo rm -rf /")), pm2);
             fails += check("registry blocks dangerous command", rDanger.isError && rDanger.output.contains("permission denied"));
 
-            // 未审批写被门拦截
-            ToolResult rAsk = reg.execute(new ToolCall("d2", "edit_file",
-                    Map.of("path", "b.txt", "old_string", "x", "new_string", "y")), pm2);
-            fails += check("registry blocks unapproved write", rAsk.isError && rAsk.output.contains("approval required"));
+            // 未审批写：进入 review-before-write（先预览 diff、不落盘），由人批准后才真正写入
+            Path g = ws.resolve("g.txt");
+            Files.writeString(g, "x\n", StandardCharsets.UTF_8);
+            ToolResult rAsk = reg.execute(new ToolCall("g1", "edit_file",
+                    Map.of("path", "g.txt", "old_string", "x", "new_string", "y")), pm2);
+            fails += check("unapproved write pauses for review (awaitUser + diff preview)",
+                    rAsk.awaitUser && rAsk.output.contains("@@") && rAsk.output.contains("-x") && rAsk.output.contains("+y"));
+            fails += check("unapproved write does NOT modify disk",
+                    "x\n".equals(Files.readString(g, StandardCharsets.UTF_8)));
 
             // 审批后写可落盘，并返回 unified diff
             Path f = ws.resolve("b.txt");

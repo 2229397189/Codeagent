@@ -14,6 +14,7 @@ public class AllTests {
         failed += SessionTest.run();
         failed += CliTest.run();
         failed += HardeningTest.run();
+        failed += ReviewWriteTest.run();
 
         if (failed == 0) {
             System.out.println("ALL TESTS PASSED");

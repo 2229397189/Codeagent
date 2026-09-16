@@ -40,6 +40,16 @@ public class EditFileTool implements Tool {
 
     @Override
     public ToolResult execute(ToolCall call, PermissionManager perms) {
+        return applyOrPreview(call, true);
+    }
+
+    /** 写前预览：只算 unified diff，不落盘（review-before-write 在批准前调用） */
+    @Override
+    public ToolResult preview(ToolCall call, PermissionManager perms) {
+        return applyOrPreview(call, false);
+    }
+
+    private ToolResult applyOrPreview(ToolCall call, boolean write) {
         String p = call.argStr("path");
         String old = call.argStr("old_string");
         String nw = call.argStr("new_string");
@@ -57,7 +67,7 @@ public class EditFileTool implements Tool {
             if (idx < 0) return ToolResult.error("old_string not found in " + p);
             String updated = content.substring(0, idx) + nw + content.substring(idx + old.length());
             String diff = DiffUtil.unifiedDiff(p, content, updated);
-            Files.writeString(file, updated, StandardCharsets.UTF_8);
+            if (write) Files.writeString(file, updated, StandardCharsets.UTF_8);
             return ToolResult.ok(diff);
         } catch (Exception e) {
             return ToolResult.error("edit failed: " + e.getMessage());

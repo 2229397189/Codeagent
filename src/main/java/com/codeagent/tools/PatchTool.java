@@ -61,4 +61,26 @@ public class PatchTool implements Tool {
             return ToolResult.error("patch failed: " + e.getMessage());
         }
     }
+
+    /** 写前预览：仅校验 diff 可应用并返回预览，不落盘 */
+    @Override
+    public ToolResult preview(ToolCall call, PermissionManager perms) {
+        String p = call.argStr("path");
+        String diff = call.argStr("diff");
+        if (p == null || diff == null) return ToolResult.error("missing path/diff");
+        Path file;
+        try {
+            file = ToolSupport.resolve(workspace, p);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        if (!Files.isRegularFile(file)) return ToolResult.error("not a regular file: " + p);
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            DiffUtil.applyUnifiedDiff(content, diff); // 仅校验可应用，不写盘
+            return ToolResult.ok("will apply to " + p + ":\n" + diff);
+        } catch (Exception e) {
+            return ToolResult.error("patch does not apply: " + e.getMessage());
+        }
+    }
 }

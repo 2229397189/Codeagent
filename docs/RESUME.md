@@ -25,8 +25,8 @@
 4. **定义统一工具协议**（`Tool / ToolRegistry / ToolSpec / ToolResult`），落地 6 个工具（read/grep/list/edit/patch/run_command）；工具结果用 `isError / awaitUser / stop / fatal` 标志驱动主循环分支，而非靠解析自然语言。
    → `tools/Tool.java`、`ToolRegistry.java`、`ToolResult.java`、`ReadFileTool.java` 等
 
-5. **实现权限边界三态决策**（`ALLOW / DENY / ASK`）：路径沙箱拒绝逃逸工作区、危险命令分类拦截（`rm -rf` / `git reset --hard` / `sudo` / fork bomb 等）、写操作 review-before-write 且审批持久化；权限决策作为 `ToolRegistry` 的**强制门**，未审批的写直接被拦截。
-   → `permission/DefaultPermissionManager.java`、`tools/ToolRegistry.java`
+5. **实现权限边界三态决策**（`ALLOW / DENY / ASK`）：路径沙箱拒绝逃逸工作区、危险命令分类拦截（`rm -rf` / `git reset --hard` / `sudo` / fork bomb 等）、写操作 review-before-write（**先展示 diff 再批准才落盘**）且审批持久化；权限决策作为 `ToolRegistry` 的**强制门**，未审批的写只返回 diff 预览、绝不落盘。
+   → `permission/DefaultPermissionManager.java`、`tools/ToolRegistry.java`、`tools/EditFileTool.java`、`tools/PatchTool.java`、`cli/CodeAgentCli.java`
 
 6. **会话事件溯源**：JSONL append-only 日志，支持 resume 重放完整上下文、rename 搬迁、fork 分支隔离（父子此后互不干扰）。
    → `session/SessionStore.java`、`session/Session.java`
@@ -65,7 +65,7 @@
 - ❌ **没有评估平台 / 离线评测集**：已有 `TraceRecorder` 做基础审计与 token 归因，但**没有** langfuse 级别的 tracing/eval，也**没有**"N 条任务集跑成功率"的离线评测。
 - ❌ **没有 Redis/MySQL**：会话与审批都是本地文件（`codeagent.properties` / `.codeagent/`）。
 - ❌ **没有自动评测集**：现有是确定性单元测试，不是"30 条任务集跑成功率"的离线评测。
-- ⚠️ **review-before-write 的当前形态**：是"**未审批则拦截、审批后落盘并返回 unified diff**"，**尚未**做到"先把 diff 展示给人看、人再决定批准"的完整交互（那需要工具的 dry-run 预览能力）。面试时照实讲，并说明这是下一步。
+- ✅ **review-before-write 已完成**：edit_file / patch 在权限为 ASK 时**先生成 diff 预览、不落盘**，主循环暂停并把 diff 打到终端问 `Approve? [y/N]`，批准才写入并持久化该目标、拒绝则把结果反馈给模型。实现在 `Tool.preview` + `ToolRegistry`（ASK→预览+awaitUser）+ `AgentLoop.pendingCall` + `CodeAgentCli.runUntilDone`；测试见 `ReviewWriteTest`（14 项断言）。
 - ⚠️ **Prompt Injection 是「基线方案」不是「完整方案」**：已做**模式检测 + 边界警示**（中英文常见注入句式，strict 模式可扣留内容），但**无法覆盖语义改写 / 编码混淆**。面试照实说是「三层防御里的运行时层」。
 
 ---
@@ -75,7 +75,7 @@
 - 语言/依赖：Java 17，**0 个第三方依赖**
 - 模块数：6（core / tools / context / permission / session / observability）+ CLI
 - 工具数：6
-- 测试断言数：**101 项，全绿**
+- 测试断言数：**116 项，全绿**（8 个测试类）
 - 上下文水位：70% warn / 90% auto / 100% hard（对齐 Codex）
 - 大结果离屏：预览 200 字符 + 完整落盘路径
 
@@ -83,7 +83,7 @@
 
 ## 六、推荐的下一步（按面试收益排序）
 
-1. **diff 预览 + 审批**：给 edit/patch 加 dry-run，真正做到"先看 diff 再批准"。
+1. ✅ **diff 预览 + 审批**：已实现（见上，review-before-write）。
 2. **离线评测集**：30 条任务跑成功率/工具准确率/格式通过率，这就是简历上"评估与可观测"的实锤。
 3. **在 TraceRecorder 之上做评测**：把 trace 聚合成成功率 / 工具准确率 / 平均步数 / 平均 token，产出离线评测报告（trace 基础已有，缺聚合）。
 4. 再往后才是 RAG、多 Agent、Plan-and-Execute。
