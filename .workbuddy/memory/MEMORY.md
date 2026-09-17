@@ -15,9 +15,9 @@
 - `retrieval/` 检索底座：Tokenizer（中日英混合：ASCII 词 + CJK unigram + bigram）、InvertedIndex、Bm25 —— **memory 与 rag 共用**
 - `memory/` ShortTermMemory（会话内有界黑板，价值=重要性×新鲜度淘汰）+ LongTermMemory（跨会话 JSONL，召回=BM25×重要性×时效性衰减）
 - `skills/` Skill/SkillRegistry 触发词打分路由 + `.codeagent/skills/*.md` frontmatter 热加载
-- `rag/` Document/Chunk/Chunker/CorpusIndexer/RagProvider（切分→索引→BM25 召回→注入，lexical 基础版）
+- `rag/` Document/Chunk/Chunker/CorpusIndexer/**Reranker**/RagProvider（切分→索引→BM25 召回→**lexical 重排**→注入，基础版）。Reranker 特征=查询词覆盖/标题命中（markdown `#`）/精确短语；默认关闭（`setReranker(null)`）→ 开启后零回归
 - `mcp/` JsonRpcClient（零依赖 JSON-RPC 2.0 over stdio，**独立 daemon 读线程防 stdio 双向死锁**）/McpClient/McpTool/McpLauncher/EmbeddedMcpServer（测试桩）
-- `workflow/` Plan + Coordinator（Plan-and-Execute：planner/executor/synthesizer 各跑独立 AgentLoop，复用同一权限门）
+- `workflow/` Plan + Coordinator（Plan-and-Execute：planner/executor/synthesizer 各跑独立 AgentLoop，复用同一权限门）。**M13：单步失败重试 1 次 + 一次重规划**（`executeStep` 重试；失败步标 `[FAILED]`；`maxReplans` 硬截断，6 参构造器默认 1）
 - `cli/` CodeAgentCli REPL（/tools /status /compact /approve /session /trace /memory /forget）+ SystemPrompt 边界注入
 - Phase-2 开关默认全关：`--memory --rag [dir] --skills [dir] --workflow --mcp <cmd>`（`--rag/--skills` 目录参数**可选**，避免互吞）
 
@@ -29,10 +29,10 @@ javac -encoding UTF-8 -d D:/code/CodeAgent/out \
 java -cp D:/code/CodeAgent/out com.codeagent.test.AllTests
 ```
 - 测试铁律（用户明确要求）：**断言返回值是预期的正确值**，不是「返回 200 不报错」就算过。
-- 当前 **215 项断言全绿（15 个测试类）**：主循环/工具/上下文/权限/会话/CLI/加固/review-before-write/评测/检索/记忆/技能/RAG/MCP/工作流。
+- 当前 **249 项断言全绿（15 个测试类）**：主循环/工具/上下文/权限/会话/CLI/加固/review-before-write/评测/检索/记忆/技能/RAG/MCP/工作流。M13 净增 34 条（WorkflowTest 重试/重规划 4、EvalTest 真实评测集 13、RagTest rerank 9、McpTest 真子进程 5，其余为断言细化）。
 
 ## 已知边界（简历/面试不得越线）
-- **已实现但只是基础版**（必须标注）：RAG（lexical BM25，无 embedding/向量库/rerank）；多 Agent（串行 Plan-and-Execute，无并行/Reflection/重规划）；MCP（**只做客户端**，无 server 端、无 resources/prompts）。
+- **已实现但只是基础版**（必须标注）：RAG（lexical BM25 + **lexical 特征重排**，无 embedding/向量库；rerank 非 cross-encoder、无语义）；多 Agent（串行 Plan-and-Execute，**含单步重试 + 一次重规划**，无并行/Reflection）；MCP（**只做客户端**，无 server 端、无 resources/prompts）。
 - **没做**：Redis/MySQL/MQ（零中间件是刻意设计）；langfuse 级 tracing/eval；完整语义 RAG。
 - 已有但别吹成完整方案：TraceRecorder（基础审计 + token 归因，非 langfuse 级）；InjectionGuard（模式匹配，覆盖不了语义改写/编码混淆）。
 - review-before-write **已实现**（M9）：`Tool.preview` dry-run + `ToolRegistry` 在 ASK 时返回 diff 预览+`awaitUser` 不落盘；`AgentLoop.pendingCall` 携带待审批调用；`CodeAgentCli.runUntilDone` 把 diff 打到终端问 `Approve? [y/N]`，批准才落盘并持久化、拒绝则反馈给模型。`--accept-edits` 跳过询问。
@@ -47,6 +47,15 @@ java -cp D:/code/CodeAgent/out com.codeagent.test.AllTests
 5. 通信：stdio vs gRPC；**stdio 缓冲区打满导致双向死锁**必须开独立读线程（本项目已实现）
 6. 可观测：JSONL trace → OpenTelemetry + Prometheus；trace/metric/log 分工；高基数标签不能进 metric
 7. ★ Agent 特有风险：密钥只从环境变量读——Agent 会把文件内容读进上下文，key 写进配置文件会被 `read_file` 带进 prompt→会话日志→Trace→模型厂商，**不可逆多点泄露**
+
+## M13 里程碑（2026-09-17 完成，PRD 见 `docs/PRD-M13.md`）
+- **P0-1 评测集扩 30 条**：`evalset/basic.jsonl` 4→30 条（纯数据，t1–t4 不变；6 工具各 ≥2 次 + 4 条安全类）；`EvalTest` 新增「加载真实文件/条数/id 唯一/覆盖度/端到端聚合」13 条断言（新增 `evalRouter` 确定性路由模型 + `resolveEvalPath`）。
+- **P0-2 Coordinator 修缺陷**：原实现「子 Agent 失败被静默吞掉」→ 现 `chatOnce` 返回完整 `AgentTurnResult`；单步失败重试 1 次、失败标 `[FAILED]`、`execute` while 循环在 `maxReplans`（默认 1）后停止重规划。`WorkflowTest` 加 `ProgrammableModel` + 4 条断言。
+- **P1-1 RAG lexical rerank**：新增 `rag/Reranker.java`（覆盖度×100 + 标题命中 50 + 精确短语 30，稳定 tiebreak）；`CorpusIndexer.setReranker` / `RagProvider.enableRerank`，**默认关闭**；`RagTest` 加 9 条（D1–D6）。
+- **P1-2 MCP 真子进程**：新增 `test/McpEchoServerFixture.java`（stdio JSON-RPC 回声 server）+ `McpTest` 真子进程 5 条断言（握手/echo/add/**连续 60 次无死锁**/shutdown 干净退出），环境受限时打印 SKIP 不 FAIL。
+- **P0-3 文档同步**：`README.md` / `docs/RESUME.md` / 本文件全部改为 **249 断言 / 64 主源文件 / eval 30 条 / 含 lexical rerank / 含重试重规划**；`PRD-M13.md` 顶部加「已实施完成」状态横幅。
+- **P2-1（MCP resources 只读）按 PRD 明确不做**。
+- 测试期间踩坑：① `ProgrammableModel` 用 `contains("step ")` 判定角色，被 synthesize 回灌的 context（含 `Step 1:`）误判成 executor → 改**按消息前缀 `startsWith` 判定**；② `Reranker` 标题命中初版只判「首行含查询词」，导致正文首行也误命中 → 改**要求首行以 markdown `#` 开头**；③ fixture 里嵌套 `new LinkedHashMap<>()` + `Map.of` 泛型推断坑 → 用显式类型参数 / 局部变量。
 
 ## 环境事实
 - GLM 资源包已生效（2026-12-13 到期）：glm-4.6v 赠送 599 万 token、glm-4.5-air 1195 万 token。默认模型已切 `glm-4.6v`（不再 429）；`--model glm-4.5-air` 更省、适合纯 coding。真实调用需本地设 `CODEAGENT_API_KEY`，沙箱/本会话无 key。离线 `--mock` 全通。

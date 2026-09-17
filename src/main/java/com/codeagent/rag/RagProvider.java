@@ -19,6 +19,14 @@ public class RagProvider {
     public int chunkCount() { return indexer.chunkCount(); }
 
     /**
+     * 开关 lexical 重排（默认关闭，纯 BM25 召回）。
+     * 开启后 retrieve 的 top-k 会在 BM25 召回集内做 lexical 重排；关闭则恢复纯 BM25。
+     */
+    public void enableRerank(boolean on) {
+        indexer.setReranker(on ? new Reranker() : null);
+    }
+
+    /**
      * 检索 top-k 相关片段并渲染为可注入 system/user 上下文的段落。
      * 返回空串表示无相关片段（调用方据此跳过注入）。
      */

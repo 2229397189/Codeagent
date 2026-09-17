@@ -25,8 +25,14 @@ public class CorpusIndexer {
     private final List<Chunk> chunks = new ArrayList<>();
     private final InvertedIndex index = new InvertedIndex();
     private boolean indexed = false;
+    /** 可选 lexical 重排器；默认 null = 关闭，retrieve 行为与原 BM25 完全一致（零回归）。 */
+    private Reranker reranker = null;
 
     public int chunkCount() { return chunks.size(); }
+
+    /** 接入 lexical 重排器（null 表示关闭，恢复纯 BM25 召回）。 */
+    public void setReranker(Reranker r) { this.reranker = r; }
+    public Reranker getReranker() { return reranker; }
 
     /** 对目录下所有 .md/.txt 建索引；返回索引的 chunk 数 */
     public int indexDirectory(Path dir) {
@@ -67,6 +73,12 @@ public class CorpusIndexer {
         List<Chunk> out = new ArrayList<>();
         for (String id : top) {
             for (Chunk c : chunks) if (c.id.equals(id)) { out.add(c); break; }
+        }
+        if (reranker != null) {
+            // 仅在 BM25 召回集内重排；k 不变（只重排、不扩召回）
+            List<Chunk> reranked = reranker.rerank(query, out);
+            if (reranked.size() > k) reranked = reranked.subList(0, k);
+            return reranked;
         }
         return out;
     }

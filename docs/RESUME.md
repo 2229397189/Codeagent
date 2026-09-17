@@ -7,7 +7,7 @@
 
 ## 一、项目一句话
 
-用 **Java 17 零第三方依赖**从零实现一个终端编码 Agent（Codex-like），13 个包 67 个源文件：主循环、统一工具协议、四层上下文治理、权限沙箱、会话事件溯源、离线评测，以及**记忆 / 技能 / RAG / MCP / 多 Agent 工作流**六大 Agent 能力；自带零依赖测试入口，**215 项断言全部断言"返回值是预期正确值"**。
+用 **Java 17 零第三方依赖**从零实现一个终端编码 Agent（Codex-like），13 个包 + cli、64 个主源文件：主循环、统一工具协议、四层上下文治理、权限沙箱、会话事件溯源、离线评测，以及**记忆 / 技能 / RAG / MCP / 多 Agent 工作流**六大 Agent 能力；自带零依赖测试入口，**249 项断言全部断言"返回值是预期正确值"**。
 
 ---
 
@@ -59,13 +59,13 @@
 14. **技能（Skills）路由式专业化**：不把所有指令塞进一条超长 system prompt，而是把常用任务（code-review / explain / refactor）写成技能，按用户输入**触发词打分路由**到最匹配的技能再注入其指令，并支持从 `.codeagent/skills/*.md`（frontmatter 格式）热加载自定义技能。
     → `skills/Skill.java`、`SkillRegistry.java`
 
-15. **RAG（基础版，诚实标注为 lexical RAG）**：文档切分（空行分段 + 超长段落滑动窗口重叠切分）→ 建索引 → BM25 召回 → 渲染为带来源的上下文块注入 prompt。**没做 embedding/向量库**，见第七节「什么时候该上向量库」。
-    → `rag/Chunker.java`、`Chunk.java`、`Document.java`、`CorpusIndexer.java`、`RagProvider.java`
+15. **RAG（基础版，诚实标注为 lexical RAG）**：文档切分（空行分段 + 超长段落滑动窗口重叠切分）→ 建索引 → BM25 召回 → **lexical 重排（`Reranker`：查询词覆盖 / 标题命中 / 精确短语，纠正 BM25 纯词频偏置，默认关闭可开关）** → 渲染为带来源的上下文块注入 prompt。**没做 embedding/向量库，rerank 也是 lexical 特征重排而非 cross-encoder**，见第七节「什么时候该上向量库」。
+    → `rag/Chunker.java`、`Chunk.java`、`Document.java`、`CorpusIndexer.java`、`Reranker.java`、`RagProvider.java`
 
 16. **MCP 客户端（零依赖 JSON-RPC 2.0 over stdio）**：自研 `JsonRpcClient`（自增 id 匹配响应、独立 daemon 读线程**规避 stdio 缓冲区打满导致的双向死锁**），完成 initialize → notifications/initialized → tools/list 握手，把远端 `tools/call` 结果适配成本地 `Tool` 接口，**复用同一套权限门与上下文治理**；`McpLauncher` 用 `ProcessBuilder` 起子进程。
     → `mcp/JsonRpcClient.java`、`McpClient.java`、`McpTool.java`、`McpLauncher.java`、`EmbeddedMcpServer.java`（进程内测试桩）
 
-17. **多 Agent 工作流（Plan-and-Execute）**：`Coordinator` 拆成 planner / executor / synthesizer 三个子 Agent，**每个子 Agent 都是一次独立的 `AgentLoop` 回合**，因此多 Agent 协作仍受同一套权限与上下文治理约束，不是「另开一个不受控的模型」；`Plan.parse` 对模型输出做**健壮解析**（剥 ```json 围栏、抠最外层 JSON、任何脏输入退化为空计划走单步直答）。
+17. **多 Agent 工作流（Plan-and-Execute）**：`Coordinator` 拆成 planner / executor / synthesizer 三个子 Agent，**每个子 Agent 都是一次独立的 `AgentLoop` 回合**，因此多 Agent 协作仍受同一套权限与上下文治理约束，不是「另开一个不受控的模型」；`Plan.parse` 对模型输出做**健壮解析**（剥 ```json 围栏、抠最外层 JSON、任何脏输入退化为空计划走单步直答）；**单步失败自动重试 1 次，仍失败则标记 `[FAILED]` 并把失败信号回灌 planner 触发一次重规划（`maxReplans` 硬截断）**，避免子 Agent 失败被静默吞掉。
     → `workflow/Coordinator.java`、`Plan.java`
 
 ---
@@ -91,10 +91,10 @@
 
 | JD 要求 | 本项目对应 | 诚实边界 |
 |---------|-----------|---------|
-| RAG | bullet 15：`rag/` 包完整链路（切分→索引→BM25 召回→注入） | **基础版 lexical RAG**，无 embedding / 无向量库 / 无 rerank |
+| RAG | bullet 15：`rag/` 包完整链路（切分→索引→BM25 召回→lexical 重排→注入） | **基础版 lexical RAG**，无 embedding / 无向量库；rerank 是 lexical 特征重排（非 cross-encoder） |
 | Prompt Engineering | bullet 8 + 14：`SystemPrompt` 边界注入 + Skills 路由式指令（把长 prompt 拆成按需加载的技能） | 没有做 prompt 的 A/B 评测（评测集只测工具与成功率） |
 | Function Calling | bullet 4：`ToolSpec` 声明 + `ToolResult` 标志位驱动主循环 | 用的是 OpenAI 兼容的 tool_calls 协议，没做多模型 schema 适配层 |
-| 多 Agent 协作框架 | bullet 17：`Coordinator` 的 Plan-and-Execute（planner/executor/synthesizer） | **没用 LangGraph/AutoGen**，是参考其思路的从零实现；子 Agent 串行执行，无并行、无 Reflection 自我纠错 |
+| 多 Agent 协作框架 | bullet 17：`Coordinator` 的 Plan-and-Execute（planner/executor/synthesizer + 单步重试 + 一次重规划） | **没用 LangGraph/AutoGen**，是参考其思路的从零实现；子 Agent 串行执行，无并行、无 Reflection 自我纠错 |
 | 深入理解 OpenClaw / Claude Code / Cursor / Copilot | 第三节 + 第七节：能讲清这些产品共同的四条设计主线（**上下文治理 / 工具协议 / 权限边界 / 可观测**），并说出我们对应在哪、差在哪 | 是**设计理解**，不是「参与开发」；面试绝不能说复刻 |
 
 **一句话总结口径**：「我没有用 LangChain/AutoGen，是**先自己实现最小 Agent Runtime，再回头看框架源码**，所以我能说出每个抽象是为了解决什么问题、以及我不想付的代价是什么。」
@@ -103,22 +103,22 @@
 
 ## 五、明确没做（面试别吹，避免过度宣称）
 
-- ⚠️ **RAG 是基础版**：已实现 lexical（BM25）全链路，但**没有 embedding、没有向量库、没有 rerank、没有答案溯源标注的完整链路**。面试说「基础版 lexical RAG」。
-- ⚠️ **多 Agent 是基础版**：Plan-and-Execute 已跑通，但**子 Agent 串行执行、无并行、无 Reflection 自我纠错、无失败重试与重规划**。
+- ⚠️ **RAG 是基础版**：已实现 lexical（BM25 + lexical rerank）全链路，但**没有 embedding、没有向量库；rerank 是可解释的 lexical 特征重排（查询词覆盖 / 标题命中 / 精确短语），不是 cross-encoder**。面试说「基础版 lexical RAG」。
+- ⚠️ **多 Agent 是基础版**：Plan-and-Execute 已跑通，**含单步失败重试（1 次）与一次重规划**，但**子 Agent 串行执行、无并行、无 Reflection 自我纠错**。
 - ⚠️ **MCP 只做了客户端**：能连外部 MCP server 并调用其工具，**没有实现 MCP server 端、没有资源（resources）与提示（prompts）能力**。
 - ❌ **没有 Redis / MySQL / MQ**：所有持久化是本地文件（JSONL）。这是**刻意的设计选择**，理由见第七节。
 - ⚠️ **Prompt Injection 是「基线方案」不是「完整方案」**：模式检测 + 边界警示（中英文常见注入句式，strict 模式可扣留），**无法覆盖语义改写 / 编码混淆**。
 - ⚠️ **TraceRecorder 是基础审计**：记录状态/步数/token 用于成本归因，**不是 langfuse 级的 tracing + eval 平台**。
-- ✅ **离线评测集已实现**（基础版，`EvalHarness` + `EvalReport`；样例 4 条，扩到 30 条即完整闭环）。
+- ✅ **离线评测集已实现**（`EvalHarness` + `EvalReport`，数据集 `evalset/basic.jsonl` **30 条**，覆盖 6 个内置工具各 ≥2 次 + 4 条安全类；`EvalTest` 断言加载真实文件 / id 唯一 / 覆盖度 / 端到端聚合）。
 
 ---
 
 ## 六、可量化的 project facts（面试随口能报）
 
 - 语言/依赖：Java 17，**0 个第三方依赖**
-- 规模：**13 个包 / 67 个源文件**（core / tools / context / permission / session / observability / eval / retrieval / memory / skills / rag / mcp / workflow + cli）
+- 规模：**13 个包 + cli / 64 个主源文件**（core / tools / context / permission / session / observability / eval / retrieval / memory / skills / rag / mcp / workflow + cli）
 - 工具数：6 个内置 + 任意 MCP 外部工具
-- 测试：**215 项断言全绿，15 个测试类**
+- 测试：**249 项断言全绿，15 个测试类**（含 1 个真实子进程 MCP 用例：独立 JVM 跑 JSON-RPC 回声 server，连续 60 次请求验证 stdio 无死锁）
 - 上下文水位：70% warn / 90% auto / 100% hard（对齐 Codex）
 - 大结果离屏：预览 200 字符 + 完整落盘路径
 - 记忆：短期有界黑板（价值淘汰）+ 长期 JSONL（BM25 × 重要性 × 时效性衰减）
@@ -224,7 +224,7 @@
 ## 八、推荐的下一步（按面试收益排序）
 
 1. ✅ diff 预览 + 审批（review-before-write）—— 已完成
-2. ✅ 离线评测集（`EvalHarness` + `EvalReport`）—— 已完成，**扩到 30 条任务**即完整闭环（性价比最高的一步）
+2. ✅ 离线评测集（`EvalHarness` + `EvalReport`）—— 已完成，**已扩到 30 条任务**并断言覆盖度/聚合，形成完整闭环
 3. ✅ 六大 Agent 能力（记忆 / 技能 / RAG / MCP / 多 Agent / 检索底座）—— 已完成（基础版）
-4. **下一步**：把中间件演进路径里的一条**真的做出来**（建议选「Redis 幂等键 + Fencing Token」或「混合召回 + rerank」），这样第七节从「论证」升级为「论证 + 实证」。
+4. ✅ rerank 环节已做成 **lexical 特征重排**（`rag/Reranker.java`，默认关闭可开关，纠正 BM25 词频偏置）——但**向量召回 + cross-encoder 精排尚未做**（需 embedding 服务 / 向量库，超出零依赖范围）。**下一步**仍是：把「Redis 幂等键 + Fencing Token」真的做出来，或补齐向量混合召回，让第七节从「论证」升级为「论证 + 实证」。
 5. 再往后：Reflection 自我纠错、并行子 Agent、MCP server 端。

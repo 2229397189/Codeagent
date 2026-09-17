@@ -96,6 +96,74 @@ public class EvalTest {
             check("parse expectContains", "OK".equals(parsed.expectContains));
             check("parse maxSteps", parsed.maxSteps == 7);
 
+            // ---- P0-1：加载真实评测集 basic.jsonl（30 条）并断言覆盖度 + 聚合 ----
+            String evalPath = resolveEvalPath();
+            List<EvalTask> fileTasks = EvalHarness.loadTasks(evalPath);
+            check("evalset loads 30 tasks", fileTasks.size() == 30);
+
+            // id 唯一
+            java.util.Set<String> ids = new java.util.HashSet<>();
+            boolean unique = true;
+            for (EvalTask t : fileTasks) if (!ids.add(t.id)) unique = false;
+            check("evalset ids are unique", unique);
+
+            // 每个任务都解析出非空 id
+            boolean allHaveId = true;
+            for (EvalTask t : fileTasks) if (t.id == null || t.id.isEmpty()) allHaveId = false;
+            check("evalset every task has an id", allHaveId);
+
+            // 覆盖度：6 个内置工具各自被 expectTool 引用 >= 2 次
+            java.util.Map<String, Integer> toolCount = new java.util.HashMap<>();
+            for (EvalTask t : fileTasks) if (t.expectTool != null)
+                toolCount.put(t.expectTool, toolCount.getOrDefault(t.expectTool, 0) + 1);
+            String[] six = {"read_file", "grep", "list_files", "edit_file", "patch", "run_command"};
+            boolean cov = true;
+            for (String tk : six) if (toolCount.getOrDefault(tk, 0) < 2) cov = false;
+            check("evalset covers each tool >=2 times", cov);
+
+            // 安全类任务 >= 3（prompt 含注入 / 危险 / 破坏 / 越权标记）
+            int safety = 0;
+            for (EvalTask t : fileTasks) {
+                String p = t.prompt.toLowerCase();
+                if (p.contains("忽略") || p.contains("rm -rf") || p.contains("删除") || p.contains("绕过")) safety++;
+            }
+            check("evalset has >=3 safety tasks", safety >= 3);
+
+            // 向后兼容：t1-t4 不变
+            check("t1 expectTool run_command", "run_command".equals(findTask(fileTasks, "t1").expectTool));
+            check("t2 expectContains GC", "GC".equals(findTask(fileTasks, "t2").expectContains));
+            check("t3 expectTool edit_file", "edit_file".equals(findTask(fileTasks, "t3").expectTool));
+            check("t4 expectTool list_files", "list_files".equals(findTask(fileTasks, "t4").expectTool));
+
+            // 端到端：确定性路由模型跑完整 30 条，断言聚合正确、无异常
+            Path ws2 = Files.createTempDirectory("codeagent-eval-file");
+            EvalHarness h2 = new EvalHarness(evalRouter(), ws2.toString(), true);
+            EvalReport rep2 = h2.runAll(fileTasks);
+            check("evalset report total == 30", rep2.total == 30);
+            check("evalset report has 30 results", rep2.results.size() == 30);
+
+            // 路由模型对每条 expectTool 任务确实调到了对应工具
+            int toolTasks = 0, toolOk = 0;
+            for (EvalResult r : rep2.results) {
+                EvalTask t = findTask(fileTasks, r.id);
+                if (t != null && t.expectTool != null) {
+                    toolTasks++;
+                    if (r.expectedToolCalled) toolOk++;
+                }
+            }
+            check("evalset every expectTool task routed correctly", toolTasks == toolOk && toolTasks > 0);
+
+            // expectContains 任务（知识 / 安全）均通过（路由模型返回了预期子串）
+            int containTasks = 0, containOk = 0;
+            for (EvalResult r : rep2.results) {
+                EvalTask t = findTask(fileTasks, r.id);
+                if (t != null && t.expectContains != null) {
+                    containTasks++;
+                    if (r.passed) containOk++;
+                }
+            }
+            check("evalset every expectContains task passed", containTasks == containOk && containTasks > 0);
+
         } catch (Exception e) {
             check("no exception: " + e.getMessage(), false);
         }
@@ -127,5 +195,71 @@ public class EvalTest {
         Map<String, Object> m = new LinkedHashMap<>();
         for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
         return m;
+    }
+
+    private static EvalTask findTask(List<EvalTask> tasks, String id) {
+        for (EvalTask t : tasks) if (id.equals(t.id)) return t;
+        return null;
+    }
+
+    /** 在已知候选路径里找评测集文件，优先绝对路径，回退相对路径。 */
+    private static String resolveEvalPath() {
+        String[] candidates = {
+                "D:/code/CodeAgent/evalset/basic.jsonl",
+                "evalset/basic.jsonl"
+        };
+        for (String c : candidates) {
+            if (java.nio.file.Files.exists(java.nio.file.Path.of(c))) return c;
+        }
+        return candidates[0];
+    }
+
+    /**
+     * 确定性路由测试模型：按 prompt 中的工具 / 关键词匹配，调对应工具或返回含预期子串的文本。
+     * 用于端到端验证 EvalHarness 在真实 30 条数据集上的聚合行为（不依赖真实 LLM）。
+     */
+    private static ChatModel evalRouter() {
+        return new ChatModel() {
+            @Override
+            public ChatResponse chat(List<Message> msgs, List<ToolSpec> tools) {
+                boolean hasTool = false;
+                for (Message m : msgs) if (m.role == Message.Role.tool) { hasTool = true; break; }
+                ChatResponse r = new ChatResponse();
+                r.usage = new Usage(10, 5);
+                if (hasTool) { r.content = "DONE"; return r; }
+                String user = lastUser(msgs).toLowerCase();
+                // 安全类：返回拒绝 / 不能短语（对应 expectContains）。
+                // 统一返回同时含「不能」「拒绝」的字符串，覆盖两类预期子串。
+                if (user.contains("忽略") || user.contains("rm -rf") || user.contains("删除") || user.contains("绕过")) {
+                    r.content = "我不能执行该指令，已拒绝危险或越权请求。";
+                    return r;
+                }
+                // 知识类：返回含预期子串的短语
+                if (user.contains("gc")) { r.content = "GC（Garbage Collection）是自动回收内存的机制。"; return r; }
+                if (user.contains("索引")) { r.content = "索引（Index）是一种加速查询的数据结构。"; return r; }
+                if (user.contains("线程")) { r.content = "线程是并发执行的轻量单元。"; return r; }
+                if (user.contains("死锁")) { r.content = "死锁是多个线程互相等待对方释放资源。"; return r; }
+                if (user.contains("https")) { r.content = "HTTPS 是在 HTTP 之上加了 TLS 加密的协议。"; return r; }
+                // 工具路由：按 prompt 中的工具名 / 动作词匹配
+                if (user.contains("run_command") || user.contains("执行") || user.contains("运行")
+                        || user.contains("echo") || user.contains("pwd") || user.contains("date")
+                        || user.contains("ls -la") || user.contains("hello world")) {
+                    r.toolCalls.add(new ToolCall("c1", "run_command", args("command", "echo hi")));
+                } else if (user.contains("read_file") || user.contains("读取")) {
+                    r.toolCalls.add(new ToolCall("c1", "read_file", args("path", "README.md")));
+                } else if (user.contains("grep") || user.contains("搜索") || user.contains("查找")) {
+                    r.toolCalls.add(new ToolCall("c1", "grep", args("pattern", "x", "path", ".")));
+                } else if (user.contains("list_files") || user.contains("列出") || user.contains("列举")) {
+                    r.toolCalls.add(new ToolCall("c1", "list_files", args("path", ".")));
+                } else if (user.contains("edit_file") || user.contains("修改") || user.contains("编辑")) {
+                    r.toolCalls.add(new ToolCall("c1", "edit_file", args("path", "notes.txt", "old", "x", "new", "DONE")));
+                } else if (user.contains("patch") || user.contains("补丁")) {
+                    r.toolCalls.add(new ToolCall("c1", "patch", args("path", "f.txt", "old", "a", "new", "b")));
+                } else {
+                    r.content = "unknown";
+                }
+                return r;
+            }
+        };
     }
 }

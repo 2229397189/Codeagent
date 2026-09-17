@@ -63,6 +63,40 @@ public class WorkflowTest {
             fails += check("coordinator truncates the plan to maxPlanSteps", model.stepCalls == 2);
         }
 
+        // ---- Coordinator：单步失败 → 重试 1 次（B2，零回归之外的增强）----
+        {
+            ProgrammableModel m = new ProgrammableModel();
+            m.step2AlwaysFails = false; // step2 首次失败、重试成功
+            Coordinator c = new Coordinator(m, new ToolRegistry(), PermissionManager.ALLOW_ALL);
+            String out = c.execute("build a feature");
+            fails += check("retry: planner called once when a step recovers", m.planCalls == 1);
+            fails += check("retry: step 2 executed twice (1 fail + 1 retry)", m.stepCalls == 4); // 1+2+1
+            fails += check("retry: reaches synthesizer", out != null && out.contains("FINAL_SUMMARY"));
+        }
+
+        // ---- Coordinator：持续失败 → 触发一次重规划（B3/B4/B5）----
+        {
+            ProgrammableModel m = new ProgrammableModel();
+            m.step2AlwaysFails = true;  // step2 永远失败
+            m.echoSynth = true;         // synthesizer 回显 context，便于断言 [FAILED] 标记
+            Coordinator c = new Coordinator(m, new ToolRegistry(), PermissionManager.ALLOW_ALL);
+            String out = c.execute("build a feature");
+            fails += check("replan: planner called exactly twice (initial + 1 replan)", m.planCalls == 2);
+            fails += check("replan: still reaches synthesizer without hang",
+                    out != null && m.synthCalls == 1);
+            fails += check("replan: failed step marked [FAILED] in context",
+                    out.contains("[FAILED]"));
+        }
+
+        // ---- Coordinator：maxReplans=0 时 planner 只调用一次（B4 上限分支）----
+        {
+            ProgrammableModel m = new ProgrammableModel();
+            m.step2AlwaysFails = true;
+            Coordinator c = new Coordinator(m, new ToolRegistry(), PermissionManager.ALLOW_ALL, 8, 12, 0);
+            c.execute("build a feature");
+            fails += check("maxReplans=0: planner called once only", m.planCalls == 1);
+        }
+
         return fails;
     }
 
@@ -103,5 +137,55 @@ public class WorkflowTest {
         }
         System.out.println("  FAIL " + name);
         return 1;
+    }
+
+    /**
+     * 可编程脚本模型：支持「单步失败可重试」「持续失败触发重规划」「synthesizer 回显」等场景，
+     * 用于断言 Coordinator 的失败重试与重规划逻辑（返回正确值而非仅不报错）。
+     */
+    static class ProgrammableModel implements ChatModel {
+        int stepCalls = 0;
+        int planCalls = 0;
+        int synthCalls = 0;
+        int step2Attempts = 0;
+        boolean step2AlwaysFails = false;
+        boolean echoSynth = false;
+
+        @Override
+        public ChatResponse chat(List<Message> messages, List<ToolSpec> tools) {
+            String lastUser = "";
+            for (Message m : messages) {
+                if (m.role == Message.Role.user) lastUser = m.content == null ? "" : m.content;
+            }
+            ChatResponse r = new ChatResponse();
+            r.usage = new Usage(1, 1);
+            String lu = lastUser.toLowerCase();
+            // 角色判定必须按 Coordinator 实际发出的消息前缀，不能用 contains("step ")，
+            // 否则综合阶段回灌的 context 里 "Step 1:" / "(3 steps executed)" 会让模型把
+            // synthesize 请求误判成 executor 步骤（测试模型缺陷，非 Coordinator 缺陷）。
+            if (lu.contains("produce a plan")) {
+                planCalls++;
+                r.content = "[{\"description\":\"step one\"},{\"description\":\"step two\"},{\"description\":\"step three\"}]";
+            } else if (lu.startsWith("step ")) {
+                stepCalls++;
+                if (lu.startsWith("step 2:")) {
+                    step2Attempts++;
+                    // 首次尝试失败（空 FINAL）→ 触发重试；alwaysFails 则每次都失败
+                    if (step2AlwaysFails || step2Attempts == 1) {
+                        r.content = "";
+                    } else {
+                        r.content = "done";
+                    }
+                } else {
+                    r.content = "done";
+                }
+            } else if (lu.startsWith("synthesize")) {
+                synthCalls++;
+                r.content = echoSynth ? lastUser : "FINAL_SUMMARY";
+            } else {
+                r.content = "unknown";
+            }
+            return r;
+        }
     }
 }

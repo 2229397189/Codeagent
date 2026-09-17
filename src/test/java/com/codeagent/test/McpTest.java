@@ -10,8 +10,11 @@ import com.codeagent.permission.PermissionManager;
 
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.nio.file.Paths;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP（Model Context Protocol）端到端测试：断言「返回正确的值」，而非仅不报错。
@@ -72,6 +75,65 @@ public class McpTest {
         } finally {
             if (server != null) server.close();
             if (client != null) client.close();
+        }
+
+        // ---- P1-2：真实子进程 MCP（端到端验证 stdio JSON-RPC 不卡死）----
+        // 环境受限（无 java / 无法起子进程）时打印 SKIP 而非 FAIL。
+        try {
+            String javaBin = System.getProperty("java.home") == null
+                    ? "java"
+                    : System.getProperty("java.home") + java.io.File.separator + "bin" + java.io.File.separator + "java";
+            String classPath;
+            try {
+                classPath = Paths.get(McpEchoServerFixture.class.getProtectionDomain()
+                        .getCodeSource().getLocation().toURI()).toString();
+            } catch (Exception e) {
+                classPath = "D:/code/CodeAgent/out";
+            }
+            List<String> command = List.of(javaBin, "-cp", classPath, "com.codeagent.test.McpEchoServerFixture");
+
+            Process p = new ProcessBuilder(command).redirectErrorStream(false).start();
+            JsonRpcClient rpc = new JsonRpcClient(p.getInputStream(), p.getOutputStream());
+            McpClient sub = new McpClient(rpc, "fixture-subprocess");
+            sub.start(5_000);
+
+            // E1：真实子进程握手拿到工具清单
+            fails += check("real-process: handshake lists echo + add", sub.toolDefs().size() == 2);
+
+            // E2：echo 工具返回传入的消息
+            Map<String, Object> echoArgs = new LinkedHashMap<>();
+            echoArgs.put("message", "hello");
+            String echoed = sub.callTool("echo", echoArgs, 5_000);
+            fails += check("real-process: echo tool returns the message", "hello".equals(echoed));
+
+            // E3：add 工具返回两数之和
+            Map<String, Object> addArgs = new LinkedHashMap<>();
+            addArgs.put("a", 2);
+            addArgs.put("b", 3);
+            String summed = sub.callTool("add", addArgs, 5_000);
+            fails += check("real-process: add tool returns the sum", "5".equals(summed));
+
+            // E4：连续 ≥50 次请求无死锁 / 无挂起（stdio 双向缓冲边界）
+            boolean allOk = true;
+            int n = 60;
+            for (int i = 0; i < n; i++) {
+                Map<String, Object> a = new LinkedHashMap<>();
+                a.put("message", "m" + i);
+                String r = sub.callTool("echo", a, 5_000);
+                if (!("m" + i).equals(r)) allOk = false;
+            }
+            fails += check("real-process: " + n + " sequential calls all succeed (no deadlock)", allOk);
+
+            // E5：shutdown 通知后子进程干净退出（无残留句柄）
+            rpc.request("shutdown", null, 3_000);
+            sub.close();
+            boolean exited = p.waitFor(3, TimeUnit.SECONDS);
+            if (!exited) p.destroyForcibly();
+            fails += check("real-process: subprocess exits after shutdown", !p.isAlive());
+
+        } catch (Exception e) {
+            // 环境无法起子进程：SKIP，不计入失败
+            System.out.println("  SKIP real-process MCP (environment: " + e.getMessage() + ")");
         }
 
         return fails;

@@ -27,18 +27,18 @@ src/main/java/com/codeagent/
 ├── permission/  权限 PermissionManager · 沙箱 · 危险命令拦截 · review-before-write · 注入防护 · 持久化
 ├── session/     会话溯源 SessionStore(JSONL) · resume/fork
 ├── observability/ 审计追踪 TraceRecorder（状态 / 步数 / token 用量）
-├── eval/        离线评测集 EvalHarness · EvalTask · EvalReport · EvalCli（复用主循环跑端到端）
+├── eval/        离线评测集 EvalHarness · EvalTask · EvalReport · EvalCli（复用主循环跑端到端；内置 30 条 basic.jsonl）
 ├── retrieval/   ★ 检索底座：Tokenizer（中日英混合分词）· InvertedIndex · BM25（记忆与 RAG 共用）
 ├── memory/      ★ 记忆：ShortTermMemory（会话内有界黑板）+ LongTermMemory（跨会话 JSONL 持久化）
 ├── skills/      ★ 技能路由：SkillRegistry 按触发词打分激活专业化 prompt，支持 .md 热加载
-├── rag/         ★ 基础版 RAG：Chunker 切分 → CorpusIndexer 建索引 → BM25 召回 → 注入上下文
+├── rag/         ★ 基础版 RAG：Chunker 切分 → CorpusIndexer 建索引 → BM25 召回 → Reranker 重排 → 注入上下文
 ├── mcp/         ★ MCP 客户端：零依赖 JSON-RPC 2.0 over stdio，远端工具适配成本地 Tool
-├── workflow/    ★ 多 Agent：Plan-and-Execute（planner / executor / synthesizer 子 Agent）
+├── workflow/    ★ 多 Agent：Plan-and-Execute（planner / executor / synthesizer）+ 单步失败重试 + 一次重规划
 └── cli/         CodeAgentCli 入口 + REPL
 ```
 
 > ★ 为 Phase-2 Agent 能力，**默认全部关闭**，用命令行开关启用（见下）。
-> 边界：RAG 是 **lexical（BM25）基础版**，无 embedding / 向量库 / rerank；多 Agent 是**串行** Plan-and-Execute，无并行、无 Reflection 自我纠错。简历口径见 `docs/RESUME.md`。
+> 边界：RAG 是 **lexical（BM25 + lexical rerank）基础版**，无 embedding / 向量库；rerank 为可解释的 lexical 特征重排（标题命中 / 查询词覆盖 / 精确短语），**非 cross-encoder、无语义**。多 Agent 是**串行** Plan-and-Execute（含单步失败重试与一次重规划），无并行、无 Reflection 自我纠错。简历口径见 `docs/RESUME.md`。
 
 ## 构建与测试
 
@@ -50,7 +50,7 @@ bash build.sh
 
 测试原则：**不只看是否报错，必须断言返回值是预期的正确值**（读文件返回精确字节、grep 返回正确行号、越权路径被拒、预算到 90% 触发压缩、会话恢复还原精确消息等）。
 
-当前 **215 项断言全部通过，0 失败**（`AllTests` 累加 15 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测 / 检索 / 记忆 / 技能 / RAG / MCP / 工作流）。
+当前 **249 项断言全部通过，0 失败**（`AllTests` 累加 15 个测试类：主循环 / 工具 / 上下文 / 权限 / 会话 / CLI / 加固 / review-before-write / 评测 / 检索 / 记忆 / 技能 / RAG / MCP / 工作流）。其中 MCP 测试包含**真实子进程**用例（拉起独立 JVM 跑 JSON-RPC 回声 server，连续 60 次请求验证 stdio 无死锁）。
 
 ## 运行
 
